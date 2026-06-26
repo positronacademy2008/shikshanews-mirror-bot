@@ -1,3 +1,4 @@
 .env
+secrets.local.env
 __pycache__/
 *.pyc
