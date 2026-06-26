@@ -1,0 +1,20 @@
+name: Verify Telegram
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - name: Verify bot token and permissions
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DEST_CHANNEL: "@testsourcechannelA"
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+        run: python verify_telegram.py
