@@ -1,0 +1,107 @@
+name: Shiksha News Mirror Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_previous_run:
+        description: "Fresh test — delete bot_state.sqlite3 before run"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "3/5 * * * *"
+
+concurrency:
+  group: shikshanews-mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  mirror-bot:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Diagnose feed and channels
+        continue-on-error: true
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DEST_CHANNEL: "@testsourcechannelA"
+          FEED_URL: https://tg.i-c-a.su/rss/shikshanewsrajasthan
+          WP_URL: https://positronacademy.in
+          WP_USER: ${{ secrets.WP_USER }}
+          WP_PASS: ${{ secrets.WP_PASS }}
+        run: python diagnose.py
+
+      - name: Clean previous bot state
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run }}
+        shell: bash
+        run: |
+          if [ -f bot_state.sqlite3 ]; then
+            rm -f bot_state.sqlite3
+            echo "Removed bot_state.sqlite3"
+          fi
+
+      - name: Run mirror bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DEST_CHANNEL: "@testsourcechannelA"
+          FEED_URL: https://tg.i-c-a.su/rss/shikshanewsrajasthan
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WP_URL: https://positronacademy.in
+          WP_USER: ${{ secrets.WP_USER }}
+          WP_PASS: ${{ secrets.WP_PASS }}
+          WP_REFERER: https://positronacademy.in/wp-admin/
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          SKIP_WORDPRESS: "false"
+          MAX_RUN_SECONDS: "540"
+          DB_FILE: bot_state.sqlite3
+          MAX_ITEMS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '1' || '3' }}
+          ITEM_DELAY_SECONDS: "2"
+          FLOOD_MAX_RETRIES: "6"
+          MAX_RETRIES: "3"
+          WP_POST_TYPE: ${{ secrets.WP_POST_TYPE || 'pages' }}
+          WP_TIMEOUT: "45"
+          WP_MAX_RETRIES: "3"
+          MAX_SOURCE_PAGES_PER_ITEM: "3"
+          PAGE_BUILD_MODE: mirror
+          SOURCE_PAGE_HOSTS: indianaukrihelp.com
+          FETCH_SOURCE_FOR_LINKS: "true"
+          BRAND_IMAGES: "false"
+          WEB_FOLLOW_LINE: ""
+          FOLLOW_LINE: ""
+          FOLLOW_LINE_TG: ""
+          FOLLOW_LINE_WA: ""
+          ACADEMY_WEBSITE: https://positronacademy.in
+        run: python shiksha_mirror.py
+
+      - name: Commit SQLite state
+        if: always()
+        shell: bash
+        run: |
+          if [ -f bot_state.sqlite3 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add bot_state.sqlite3
+            if git diff --cached --quiet; then
+              echo "bot_state.sqlite3 unchanged"
+            else
+              git commit -m "Update bot sqlite state"
+              git push origin HEAD:main || true
+            fi
+          fi
