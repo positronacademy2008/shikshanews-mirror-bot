@@ -525,12 +525,57 @@ def _html_paragraph(text: str) -> str:
     return bot.linkify_text(escaped)
 
 
+_MIRROR_META_LINE_RES = (
+    re.compile(r"^follow\s+us\.?$", re.I),
+    re.compile(r"^by\s+.+$", re.I),
+    re.compile(r"^published\s+on\s*:.+$", re.I),
+    re.compile(r"^result\s*,\s*latest\s+news$", re.I),
+    re.compile(r"^latest\s+news$", re.I),
+)
+_MIRROR_META_COMBINED_RE = re.compile(
+    r"^(?:result\s*,\s*)?latest\s+news(?:\s+by\s+.+?)?(?:\s+published\s+on\s*:.+)?(?:\s+follow\s+us)?\.?$",
+    re.I,
+)
+
+
+def _contains_substantive_heading(tag) -> bool:
+    for heading in tag.find_all(re.compile(r"^h[1-6]$")):
+        if len(bot.normalize_whitespace(heading.get_text(" ", strip=True))) >= 12:
+            return True
+    return False
+
+
+def _is_mirror_post_meta_text(text: str) -> bool:
+    clean = bot.normalize_whitespace(text)
+    if not clean or len(clean) > 220:
+        return False
+    lower = clean.lower()
+    if _MIRROR_META_COMBINED_RE.match(clean):
+        return True
+    if any(pattern.match(clean) for pattern in _MIRROR_META_LINE_RES):
+        return True
+    if "published on:" in lower and "by " in lower and len(clean) < 160:
+        return True
+    return False
+
+
+def _remove_mirror_post_meta(soup_or_tag) -> None:
+    """Drop indianaukrihelp author/date/category/follow boilerplate from mirrored pages."""
+    for tag in list(soup_or_tag.find_all(["p", "div", "span", "li", "section", "small"])):
+        if _contains_substantive_heading(tag):
+            continue
+        text = bot.normalize_whitespace(tag.get_text(" ", strip=True))
+        if _is_mirror_post_meta_text(text):
+            tag.decompose()
+
+
 def _remove_mirror_noise(soup_or_tag) -> None:
     for element in list(soup_or_tag(["script", "style", "noscript", "iframe", "form", "button", "svg"])):
         element.decompose()
     for element in list(soup_or_tag.find_all(["nav", "footer", "header", "aside"])):
         element.decompose()
     _remove_existing_important_link_sections(soup_or_tag)
+    _remove_mirror_post_meta(soup_or_tag)
     for selector in (
         ".sharedaddy",
         ".jp-relatedposts",
