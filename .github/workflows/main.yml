@@ -71,7 +71,7 @@ jobs:
           SKIP_WORDPRESS: "false"
           MAX_RUN_SECONDS: "540"
           DB_FILE: bot_state.sqlite3
-          MAX_ITEMS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '1' || '3' }}
+          MAX_ITEMS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '2' || '3' }}
           ITEM_DELAY_SECONDS: "2"
           FLOOD_MAX_RETRIES: "6"
           MAX_RETRIES: "3"

@@ -26,16 +26,20 @@ def _title_key(value: str) -> str:
     return re.sub(r"\W+", "", bot.normalize_whitespace(value).lower())[:100]
 
 
+def _is_media_cdn_url(url: str) -> bool:
+    lower = bot.clean_url(url).lower()
+    return any(hint in lower for hint in MEDIA_URL_HINTS)
+
+
 def _is_media_url(url: str, enclosure_url: str = "") -> bool:
     if not url:
         return False
     clean = bot.clean_url(url)
+    if not _is_media_cdn_url(clean):
+        return False
     if enclosure_url and clean == bot.clean_url(enclosure_url):
         return True
-    lower = clean.lower()
-    if bot.looks_like_real_image(clean):
-        return True
-    return any(hint in lower for hint in MEDIA_URL_HINTS)
+    return bot.looks_like_real_image(clean)
 
 
 def _strip_media_urls(text: str, enclosure_url: str = "") -> str:
@@ -44,6 +48,12 @@ def _strip_media_urls(text: str, enclosure_url: str = "") -> str:
         return "" if _is_media_url(url, enclosure_url) else url
 
     cleaned = bot.URL_RE.sub(replace, text or "")
+
+    def paren_replace(match: re.Match[str]) -> str:
+        url = bot.clean_url(match.group(1))
+        return "" if _is_media_url(url, enclosure_url) else match.group(0)
+
+    cleaned = re.sub(r"\(\s*(https?://[^\s)]+)\s*\)", paren_replace, cleaned)
     cleaned = re.sub(r"\(\s*\)", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return bot.normalize_whitespace(cleaned)
@@ -63,7 +73,9 @@ def _dedupe_title_lines(text: str, title: str) -> str:
             if kept and kept[-1] != "":
                 kept.append("")
             continue
-        line_key = _title_key(line)
+        if re.search(r"\[\s*\.{3}\s*\]", line):
+            continue
+        line_key = _title_key(re.sub(r"\[\s*\.{3}\s*\]", "", line))
         if key and (line_key == key or (len(key) >= 24 and line_key.startswith(key[:24]))):
             if seen:
                 continue
@@ -73,16 +85,37 @@ def _dedupe_title_lines(text: str, title: str) -> str:
 
 
 def _normalize_photo_enclosure(item: bot.FeedItem) -> None:
-    """Ensure photo posts use a real image URL + mime before Telegram send."""
-    if item.enclosure_url and bot.looks_like_real_image(item.enclosure_url):
-        guessed = mimetypes.guess_type(item.enclosure_url)[0] or ""
-        if guessed.startswith("image/"):
-            item.enclosure_type = bot.normalize_mime(guessed)
-            return
+    """Keep only Telegram/RSS CDN images — never treat WP or article URLs as photos."""
+    saved_url, saved_type = item.enclosure_url, item.enclosure_type
+    item.enclosure_url, item.enclosure_type = "", ""
     bot.enrich_item_media(item)
-    if item.enclosure_url and bot.looks_like_real_image(item.enclosure_url):
-        guessed = mimetypes.guess_type(item.enclosure_url)[0] or "image/jpeg"
-        item.enclosure_type = bot.normalize_mime(guessed)
+    if not item.enclosure_url:
+        item.enclosure_url, item.enclosure_type = saved_url, saved_type
+    url = item.enclosure_url or ""
+    if not url or not _is_media_cdn_url(url) or not bot.looks_like_real_image(url):
+        item.enclosure_url = ""
+        item.enclosure_type = ""
+        return
+    guessed = mimetypes.guess_type(url)[0] or "image/jpeg"
+    item.enclosure_type = bot.normalize_mime(guessed)
+
+
+def _has_valid_photo(item: bot.FeedItem) -> bool:
+    url = item.enclosure_url or ""
+    if not url or not _is_media_cdn_url(url):
+        return False
+    ctype = bot.normalize_mime(item.enclosure_type)
+    return ctype.startswith("image/") or bool(mimetypes.guess_type(url)[0])
+
+
+def _ensure_wp_link_in_text(text: str, replacements: dict[str, str]) -> str:
+    wp_links = [value for value in replacements.values() if value and "positronacademy.in" in value]
+    if not wp_links:
+        return text
+    primary = wp_links[0]
+    if primary in text:
+        return text
+    return bot.normalize_whitespace(f"{text}\n\n{primary}")
 
 
 def _has_mirror_targets(item: bot.FeedItem, config: bot.Config) -> bool:
@@ -138,17 +171,14 @@ def dispatch_replaced_message(
     replacements: dict[str, str],
 ) -> None:
     """Send feed message to test channel with indianaukrihelp links replaced by our WP URLs."""
-    _normalize_photo_enclosure(item)
-    ctype = bot.normalize_mime(item.enclosure_type)
-    has_photo = bool(
-        item.enclosure_url
-        and (ctype.startswith("image/") or bot.looks_like_real_image(item.enclosure_url))
-    )
-    text = _build_outbound_text(item, for_photo=has_photo)
+    has_photo = _has_valid_photo(item)
+    text = _build_outbound_text(item)
     if replacements:
         text = bot.apply_link_replacements_text(text, replacements)
+    text = _ensure_wp_link_in_text(text, replacements)
     if not text:
         text = run_bot.clean_title(item.title, item.source_url or "", item.text)
+    ctype = bot.normalize_mime(item.enclosure_type)
 
     for index, channel in enumerate(self.config.dest_channels):
         if index and self.config.item_delay_seconds > 0:
@@ -181,6 +211,8 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
             return
 
         _normalize_photo_enclosure(item)
+        photo_enclosure_url = item.enclosure_url
+        photo_enclosure_type = item.enclosure_type
         source_page_html, page_links = "", []
         if item.source_url and not bot.host_matches(item.source_url, self.config.source_page_hosts):
             source_page_html, page_links = self.fetch_source_context(item.source_url)
@@ -199,9 +231,12 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
 
         item.text = bot.apply_link_replacements_text(item.text, source_replacements)
         item.text = _dedupe_title_lines(item.text, item.title)
+        item.text = _ensure_wp_link_in_text(item.text, source_replacements)
         item.html_content = bot.apply_link_replacements_html(
             item.html_content, source_replacements, item.source_url
         )
+        item.enclosure_url = photo_enclosure_url
+        item.enclosure_type = photo_enclosure_type
         wp_link = wp_link or next(iter(source_replacements.values()))
         if wp_link:
             self.state.set_wp_link(item.guid, wp_link)
