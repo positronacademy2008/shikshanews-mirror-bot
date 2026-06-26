@@ -156,20 +156,27 @@ def _remove_existing_important_link_sections(soup_or_tag) -> None:
     for element in list(soup_or_tag.select(",".join(selectors))):
         element.decompose()
 
+    def _remove_heading_link_block(heading) -> None:
+        sibling = heading.find_next_sibling()
+        heading.decompose()
+        while sibling and getattr(sibling, "name", "") in {"ul", "ol", "table", "p", "div", "section"}:
+            next_sibling = sibling.find_next_sibling()
+            sibling.decompose()
+            sibling = next_sibling
+
     for heading in list(soup_or_tag.find_all(re.compile(r"^h[1-6]$"))):
         heading_text = bot.normalize_whitespace(heading.get_text(" ", strip=True))
         if not IMPORTANT_HEADING_RE.search(heading_text):
             continue
         container = heading.parent
-        if container and getattr(container, "name", "") in {"section", "div", "article"}:
+        if (
+            container
+            and getattr(container, "name", "") == "section"
+            and len(bot.strip_tags(str(container))) < 1200
+        ):
             container.decompose()
             continue
-        sibling = heading.find_next_sibling()
-        heading.decompose()
-        while sibling and getattr(sibling, "name", "") in {"ul", "ol", "table", "p", "div"}:
-            next_sibling = sibling.find_next_sibling()
-            sibling.decompose()
-            sibling = next_sibling
+        _remove_heading_link_block(heading)
 
 
 def _remove_layout_noise(soup_or_tag) -> None:
