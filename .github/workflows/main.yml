@@ -75,7 +75,7 @@ jobs:
           ITEM_DELAY_SECONDS: "2"
           FLOOD_MAX_RETRIES: "6"
           MAX_RETRIES: "3"
-          WP_POST_TYPE: ${{ secrets.WP_POST_TYPE || 'pages' }}
+          WP_POST_TYPE: pages
           WP_TIMEOUT: "45"
           WP_MAX_RETRIES: "3"
           MAX_SOURCE_PAGES_PER_ITEM: "3"

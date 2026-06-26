@@ -552,8 +552,6 @@ def _remove_duplicate_title_blocks(soup, title: str) -> None:
     if not title_key:
         return
     for heading in list(soup.find_all(re.compile(r"^h[1-6]$"))):
-        if heading.name == "h1":
-            continue
         if _title_match_key(heading.get_text(" ", strip=True)) == title_key:
             heading.decompose()
     for tag in list(soup.find_all(["p", "div", "span", "strong"])):
@@ -563,17 +561,6 @@ def _remove_duplicate_title_blocks(soup, title: str) -> None:
         text_key = _title_match_key(text)
         if text_key == title_key or (len(title_key) >= 24 and text_key.startswith(title_key[:24])):
             tag.decompose()
-
-
-def _insert_clean_h1(soup, title: str) -> Any:
-    display_title = title
-    for old_h1 in list(soup.find_all("h1")):
-        old_h1.decompose()
-    h1 = soup.new_tag("h1")
-    h1.string = display_title
-    target = soup.find("article") or soup.find("main") or soup.find("body") or soup
-    target.insert(0, h1)
-    return target
 
 
 def _build_mirror_html(
@@ -597,7 +584,9 @@ def _build_mirror_html(
     soup = bot.make_soup(cleaned, "html.parser")
     _remove_mirror_noise(soup)
     bot.normalize_links(soup, source_url)
-    target = _insert_clean_h1(soup, display_title)
+    for old_h1 in list(soup.find_all("h1")):
+        old_h1.decompose()
+    target = soup.find("article") or soup.find("main") or soup.find("body") or soup
     _remove_duplicate_title_blocks(soup, display_title)
     _remove_source_link_start_blocks(soup)
     _strip_blocked_source_urls_from_text(soup, source_url)
