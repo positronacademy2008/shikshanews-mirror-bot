@@ -376,7 +376,18 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
         )
 
 
+def _bind_select_items_newest_first() -> None:
+    """RSS lists oldest posts first; mirror newest actionable items before stale skip-only rows."""
+    original = bot.MirrorBot.select_items
+
+    def wrapped(self: bot.MirrorBot, items: list[bot.FeedItem]) -> list[bot.FeedItem]:
+        return original(self, list(reversed(items)))
+
+    bot.MirrorBot.select_items = wrapped  # type: ignore[method-assign]
+
+
 def patch_mirror_bot() -> None:
+    _bind_select_items_newest_first()
     bot.MirrorBot.process_one = process_mirror_item
     bot.MirrorBot.catchup_wordpress_links = catchup_mirror_targets_only
 

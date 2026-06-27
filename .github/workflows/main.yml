@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       clean_previous_run:
-        description: "Fresh test — delete bot_state.sqlite3 before run"
+        description: "Fresh test — wipe state and re-send all 10 feed posts (newest first)"
         required: false
         default: false
         type: boolean
@@ -69,9 +69,9 @@ jobs:
           WP_REFERER: https://positronacademy.in/wp-admin/
           ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           SKIP_WORDPRESS: "false"
-          MAX_RUN_SECONDS: "540"
+          MAX_RUN_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '900' || '540' }}
           DB_FILE: bot_state.sqlite3
-          MAX_ITEMS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '2' || '3' }}
+          MAX_ITEMS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '10' || '3' }}
           ITEM_DELAY_SECONDS: "3"
           FLOOD_MAX_RETRIES: "8"
           MAX_RETRIES: "3"
