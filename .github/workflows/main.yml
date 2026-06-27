@@ -72,21 +72,28 @@ jobs:
           MAX_RUN_SECONDS: "540"
           DB_FILE: bot_state.sqlite3
           MAX_ITEMS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.clean_previous_run && '2' || '3' }}
-          ITEM_DELAY_SECONDS: "2"
-          FLOOD_MAX_RETRIES: "6"
+          ITEM_DELAY_SECONDS: "3"
+          FLOOD_MAX_RETRIES: "8"
           MAX_RETRIES: "3"
           WP_POST_TYPE: pages
           WP_TIMEOUT: "45"
           WP_MAX_RETRIES: "3"
+          WP_SKIP_EXISTING: "true"
+          WP_UPLOAD_MEDIA: "false"
           MAX_SOURCE_PAGES_PER_ITEM: "3"
+          FETCH_SOURCE_FOR_LINKS: "true"
           PAGE_BUILD_MODE: mirror
           SOURCE_PAGE_HOSTS: indianaukrihelp.com
-          FETCH_SOURCE_FOR_LINKS: "true"
-          BRAND_IMAGES: "false"
+          SKIP_MESSAGE_PHRASES: "शिक्षा विभाग समाचार"
           WEB_FOLLOW_LINE: ""
-          FOLLOW_LINE: ""
+          BRAND_IMAGES: "false"
+          IMAGE_BRAND_NAME: POSITRON ACADEMY
+          IMAGE_BRAND_ADDRESS: "चौधरी के पास हॉस्पिटल, पांसल चौराहा,भीलवाड़ा"
+          IMAGE_BRAND_ADDRESS_LATIN: "Chaudhary Hospital ke paas, Pansal Chauraha, Bhilwara"
+          IMAGE_BRAND_CONTACT: "8104894648"
           FOLLOW_LINE_TG: ""
           FOLLOW_LINE_WA: ""
+          FOLLOW_LINE: ""
           ACADEMY_WEBSITE: https://positronacademy.in
         run: python shiksha_mirror.py
 

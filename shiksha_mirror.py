@@ -32,9 +32,6 @@ FEED_CHANNEL_LINE_HINTS = (
     "subscribe channel",
 )
 
-_original_send_pdf_item = bot.MirrorBot.send_pdf_item
-
-
 def _title_key(value: str) -> str:
     return re.sub(r"\W+", "", bot.normalize_whitespace(value).lower())[:100]
 
@@ -185,16 +182,6 @@ def _has_valid_photo(item: bot.FeedItem) -> bool:
     return ctype.startswith("image/") or guessed.startswith("image/")
 
 
-def _ensure_wp_link_in_text(text: str, replacements: dict[str, str]) -> str:
-    wp_links = [value for value in replacements.values() if value and "positronacademy.in" in value]
-    if not wp_links:
-        return text
-    primary = wp_links[0]
-    if primary in text:
-        return text
-    return bot.normalize_whitespace(f"{text}\n\n{primary}")
-
-
 def _has_mirror_targets(item: bot.FeedItem, config: bot.Config) -> bool:
     urls = [
         item.source_url,
@@ -212,32 +199,6 @@ def _should_process_item(item: bot.FeedItem, config: bot.Config) -> bool:
     return _has_mirror_targets(item, config) or _has_valid_photo(item) or _has_valid_pdf(item)
 
 
-def _html_to_telegram_text(item: bot.FeedItem) -> str:
-    markup = item.html_content or ""
-    if not markup:
-        return ""
-    soup = bot.make_soup(markup, "html.parser")
-    for img in soup.find_all("img"):
-        src = bot.safe_url(img.get("src", ""), item.source_url)
-        if _is_media_attachment_url(src, item.enclosure_url):
-            img.decompose()
-    for link in soup.find_all("a", href=True):
-        href = bot.safe_url(link.get("href", ""), item.source_url)
-        if _is_media_attachment_url(href, item.enclosure_url) or _is_telegram_channel_url(href):
-            link.decompose()
-    return bot.html_to_text_with_links(str(soup), item.source_url)
-
-
-def _build_outbound_text(item: bot.FeedItem) -> str:
-    text = bot.remove_spam_urls_from_text(item.text or "")
-    if not text and item.html_content:
-        text = _html_to_telegram_text(item)
-    text = _dedupe_title_lines(text, item.title)
-    text = _strip_feed_channel_refs(text)
-    text = _strip_media_urls(text, item.enclosure_url)
-    return bot.normalize_whitespace(text)
-
-
 def _notify_admin(telegram: bot.TelegramClient, config: bot.Config, message: str) -> None:
     if not config.admin_chat_id:
         return
@@ -245,45 +206,6 @@ def _notify_admin(telegram: bot.TelegramClient, config: bot.Config, message: str
         telegram.send_text(config.admin_chat_id, message[:3900], disable_preview=False)
     except Exception as exc:
         LOGGER.warning("Admin notification failed: %s", exc)
-
-
-def send_pdf_item(self: bot.MirrorBot, item: bot.FeedItem, media_caption: str, fallback_text: str) -> None:
-    media_caption = _strip_feed_channel_refs(_strip_media_urls(media_caption, item.enclosure_url))
-    fallback_text = _strip_feed_channel_refs(_strip_media_urls(fallback_text, item.enclosure_url))
-    _original_send_pdf_item(self, item, media_caption, fallback_text)
-
-
-def dispatch_replaced_message(
-    self: bot.MirrorBot,
-    item: bot.FeedItem,
-    replacements: dict[str, str],
-) -> None:
-    """Send feed message to test channel with indianaukrihelp links replaced by our WP URLs."""
-    text = _build_outbound_text(item)
-    if replacements:
-        text = bot.apply_link_replacements_text(text, replacements)
-    text = _ensure_wp_link_in_text(text, replacements)
-    text = _strip_feed_channel_refs(_strip_media_urls(text, item.enclosure_url))
-    if not text:
-        text = run_bot.clean_title(item.title, item.source_url or "", item.text or "")
-
-    has_pdf = _has_valid_pdf(item)
-    has_photo = _has_valid_photo(item)
-
-    if has_pdf:
-        caption = text[:900]
-        self.send_pdf_item(item, caption, text)
-        return
-
-    if has_photo:
-        caption = text[:900]
-        self.send_image_item(item, caption, text)
-        return
-
-    for index, channel in enumerate(self.config.dest_channels):
-        if index and self.config.item_delay_seconds > 0:
-            time.sleep(self.config.item_delay_seconds)
-        self.telegram.send_text(channel, text)
 
 
 def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
@@ -336,16 +258,24 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
                 self.state.set_wp_link(item.guid, wp_link)
 
         item.text = _dedupe_title_lines(item.text, item.title)
-        if source_replacements:
-            item.text = _ensure_wp_link_in_text(item.text, source_replacements)
         item.enclosure_url = media_enclosure_url
         item.enclosure_type = media_enclosure_type
+
+        important_links = bot.dedupe_links(
+            [
+                *bot.extract_important_links(item.html_content or item.text, item.source_url),
+                *bot.extract_important_links(source_page_html, item.source_url),
+                *page_links,
+            ],
+            limit=24,
+        )
+        caption_source_url = self.caption_source_url(item.source_url or "", source_replacements)
 
         if self.config.dry_run:
             LOGGER.info("[DRY_RUN] Would send to %s: %s", self.config.dest_channels, item.title[:80])
             return
 
-        dispatch_replaced_message(self, item, source_replacements)
+        self.dispatch_telegram(item, wp_link, important_links, caption_source_url)
         self.state.mark_published(item.guid, wp_link)
 
         if source_replacements:
@@ -379,7 +309,6 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
 
 def patch_mirror_bot() -> None:
     bot.MirrorBot.process_one = process_mirror_item
-    bot.MirrorBot.send_pdf_item = send_pdf_item
 
 
 def main() -> None:

@@ -38,10 +38,19 @@ SOURCE_PAGE_HOSTS = tuple(
     part.strip() for part in os.environ.get("SOURCE_PAGE_HOSTS", "indianaukrihelp.com").split(",") if part.strip()
 )
 
+MEDIA_URL_HINTS = (
+    "telesco.pe",
+    "cdn-telegram",
+    "cdn4.cdn-telegram.org",
+    "tg.i-c-a.su",
+    "telegram.org/file",
+)
+
 _original_sanitize_html_content = bot.sanitize_html_content
 _original_publish = bot.WordPressClient.publish
 _original_upload_media_bytes = bot.WordPressClient.upload_media_bytes
 _original_send_image_item = bot.MirrorBot.send_image_item
+_original_send_pdf_item = bot.MirrorBot.send_pdf_item
 _original_dispatch_telegram = bot.MirrorBot.dispatch_telegram
 
 
@@ -133,6 +142,41 @@ def _source_host_in_url(url: str) -> bool:
 
 def _is_pdf_url(url: str) -> bool:
     return urlparse(bot.clean_url(url)).path.lower().endswith(".pdf")
+
+
+def _is_media_cdn_url(url: str) -> bool:
+    lower = bot.clean_url(url).lower()
+    return any(hint in lower for hint in MEDIA_URL_HINTS)
+
+
+def _is_media_attachment_url(url: str, enclosure_url: str = "") -> bool:
+    if not url:
+        return False
+    clean = bot.clean_url(url)
+    if not _is_media_cdn_url(clean):
+        return False
+    if enclosure_url and clean == bot.clean_url(enclosure_url):
+        return True
+    if _is_pdf_url(clean):
+        return True
+    return bot.looks_like_real_image(clean)
+
+
+def _strip_media_urls(text: str, enclosure_url: str = "") -> str:
+    def replace(match: re.Match[str]) -> str:
+        url = bot.clean_url(match.group(1))
+        return "" if _is_media_attachment_url(url, enclosure_url) else url
+
+    cleaned = bot.URL_RE.sub(replace, text or "")
+
+    def paren_replace(match: re.Match[str]) -> str:
+        url = bot.clean_url(match.group(1))
+        return "" if _is_media_attachment_url(url, enclosure_url) else match.group(0)
+
+    cleaned = re.sub(r"\(\s*(https?://[^\s)]+)\s*\)", paren_replace, cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return bot.normalize_whitespace(cleaned)
 
 
 def _blocked_source_url(url: str) -> bool:
@@ -484,7 +528,7 @@ def _extract_pdf_links(*sources: tuple[str, str]) -> list[bot.LinkInfo]:
             soup = bot.make_soup(content, "html.parser")
             for link in soup.find_all("a", href=True):
                 href = bot.safe_url(link.get("href"), base_url)
-                if not href or not _is_pdf_url(href):
+                if not href or not _is_pdf_url(href) or _is_media_cdn_url(href):
                     continue
                 label = bot.normalize_whitespace(link.get_text(" ", strip=True)) or "PDF Download"
                 key = _canonical_url(href)
@@ -493,7 +537,7 @@ def _extract_pdf_links(*sources: tuple[str, str]) -> list[bot.LinkInfo]:
                     links.append(bot.LinkInfo(label=label[:100], href=href))
         for url in bot.extract_urls(content):
             href = bot.safe_url(url, base_url)
-            if href and _is_pdf_url(href):
+            if href and _is_pdf_url(href) and not _is_media_cdn_url(href):
                 key = _canonical_url(href)
                 if key not in seen:
                     seen.add(key)
@@ -773,9 +817,12 @@ def build_caption(
     important_links: list[bot.LinkInfo],
     config: bot.Config,
     limit: int,
+    enclosure_url: str = "",
 ) -> str:
     display_title = clean_title(title, source_url, fallback_text or content_text)
     title_key = re.sub(r"\W+", "", display_title.lower())
+    content_text = _strip_media_urls(content_text, enclosure_url)
+    fallback_text = _strip_media_urls(fallback_text, enclosure_url)
     caption_source = content_text or fallback_text
     if "<" in caption_source and ">" in caption_source:
         caption_source = fallback_text or bot.html_to_text_with_links(caption_source, source_url)
@@ -808,6 +855,8 @@ def build_caption(
         if len([line for line in fixed_tail if line.startswith("Official:")]) >= 3:
             break
     for index, pdf in enumerate(pdf_links[:3], start=1):
+        if _is_media_attachment_url(pdf.href, enclosure_url):
+            continue
         label = bot.normalize_whitespace(pdf.label)
         if not label or label.lower() == "pdf download":
             label = f"PDF {index}"
@@ -822,11 +871,14 @@ def build_caption(
         if fixed_tail:
             lines.append("")
             lines.extend(fixed_tail)
-        candidate = bot.normalize_whitespace("\n".join(lines))
+        candidate = _strip_media_urls(bot.normalize_whitespace("\n".join(lines)), enclosure_url)
         if len(candidate) <= limit:
             return candidate
 
-    minimal = bot.normalize_whitespace("\n".join([display_title[:180], "", *fixed_tail]))
+    minimal = _strip_media_urls(
+        bot.normalize_whitespace("\n".join([display_title[:180], "", *fixed_tail])),
+        enclosure_url,
+    )
     return bot.trim_preserving_urls(minimal, limit)
 
 
@@ -957,6 +1009,9 @@ def send_image_item(self, item: bot.FeedItem, media_caption: str, fallback_text:
             self.telegram.send_text(channel, fallback_text)
         return
 
+    media_caption = _strip_media_urls(media_caption, item.enclosure_url)
+    fallback_text = _strip_media_urls(fallback_text, item.enclosure_url)
+
     for index, channel in enumerate(self.config.dest_channels):
         if index and self.config.item_delay_seconds > 0:
             time.sleep(self.config.item_delay_seconds)
@@ -967,6 +1022,12 @@ def send_image_item(self, item: bot.FeedItem, media_caption: str, fallback_text:
             self.telegram.send_text(channel, fallback_text)
 
 
+def send_pdf_item(self, item: bot.FeedItem, media_caption: str, fallback_text: str) -> None:
+    media_caption = _strip_media_urls(media_caption, item.enclosure_url)
+    fallback_text = _strip_media_urls(fallback_text, item.enclosure_url)
+    _original_send_pdf_item(self, item, media_caption, fallback_text)
+
+
 def dispatch_telegram(
     self,
     item: bot.FeedItem,
@@ -975,8 +1036,10 @@ def dispatch_telegram(
     caption_source_url: str,
 ) -> None:
     clean_text = bot.remove_spam_urls_from_text(item.text)
+    clean_text = _strip_media_urls(clean_text, item.enclosure_url)
     display_title = clean_title(item.title, item.source_url or "", clean_text)
     rewritten_text = self.ai.recreate_plain(display_title, clean_text)
+    rewritten_text = _strip_media_urls(rewritten_text, item.enclosure_url)
     media_caption = build_caption(
         item.title,
         rewritten_text,
@@ -986,6 +1049,7 @@ def dispatch_telegram(
         important_links,
         self.config,
         900,
+        item.enclosure_url,
     )
     text_caption = build_caption(
         item.title,
@@ -996,6 +1060,7 @@ def dispatch_telegram(
         important_links,
         self.config,
         3900,
+        item.enclosure_url,
     )
     ctype = bot.normalize_mime(item.enclosure_type)
     if item.enclosure_url and ctype == "application/pdf":
@@ -1018,6 +1083,7 @@ bot.build_source_page_content = build_source_page_content
 bot.build_caption = build_caption
 bot.WordPressClient.publish = publish
 bot.WordPressClient.upload_media_bytes = upload_media_bytes
+bot.MirrorBot.send_pdf_item = send_pdf_item
 bot.MirrorBot.send_image_item = send_image_item
 bot.MirrorBot.dispatch_telegram = dispatch_telegram
 
