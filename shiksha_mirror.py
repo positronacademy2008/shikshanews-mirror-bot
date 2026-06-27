@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import time
+from typing import Any
 from urllib.parse import urlparse
 
 import run_bot  # noqa: F401 — mirror sanitization + WP page builders
@@ -31,6 +32,11 @@ FEED_CHANNEL_LINE_HINTS = (
     "follow channel",
     "subscribe channel",
 )
+
+MEDIA_ONLY_WP_MARKER = "media-only"
+
+_original_catchup_wordpress_links = bot.MirrorBot.catchup_wordpress_links
+
 
 def _title_key(value: str) -> str:
     return re.sub(r"\W+", "", bot.normalize_whitespace(value).lower())[:100]
@@ -129,36 +135,48 @@ def _dedupe_title_lines(text: str, title: str) -> str:
     return bot.normalize_whitespace("\n".join(kept))
 
 
+def _is_preview_media_url(url: str) -> bool:
+    lower = bot.clean_url(url).lower()
+    return "preview" in lower or "thumb" in lower
+
+
+def _collect_cdn_media_urls(item: bot.FeedItem) -> tuple[list[str], list[str]]:
+    pdf_urls: list[str] = []
+    image_urls: list[str] = []
+    sources = [item.enclosure_url or "", item.text or "", item.html_content or ""]
+    for chunk in sources:
+        for url in bot.extract_urls(chunk):
+            clean = bot.clean_url(url)
+            if not _is_media_cdn_url(clean):
+                continue
+            if _is_pdf_url(clean):
+                if clean not in pdf_urls:
+                    pdf_urls.append(clean)
+            elif bot.looks_like_real_image(clean) and clean not in image_urls:
+                image_urls.append(clean)
+    return pdf_urls, image_urls
+
+
+def _pick_best_image_url(image_urls: list[str]) -> str:
+    if not image_urls:
+        return ""
+    full = [url for url in image_urls if not _is_preview_media_url(url)]
+    return (full or image_urls)[0]
+
+
 def _normalize_media_enclosure(item: bot.FeedItem) -> None:
-    """Keep Telegram/RSS CDN photos and PDFs; drop article/site URLs mistaken as media."""
-    saved_url, saved_type = item.enclosure_url, item.enclosure_type
-    if (
-        saved_url
-        and _is_media_cdn_url(saved_url)
-        and (_is_pdf_url(saved_url) or bot.normalize_mime(saved_type) == "application/pdf")
-    ):
-        item.enclosure_url = saved_url
+    """Keep Telegram/RSS CDN photos and PDFs; prefer full-size files over preview thumbs."""
+    pdf_urls, image_urls = _collect_cdn_media_urls(item)
+    if pdf_urls:
+        item.enclosure_url = pdf_urls[0]
         item.enclosure_type = "application/pdf"
         return
 
-    item.enclosure_url, item.enclosure_type = "", ""
-    bot.enrich_item_media(item)
-    if not item.enclosure_url:
-        item.enclosure_url, item.enclosure_type = saved_url, saved_type
-    url = item.enclosure_url or ""
-    if not url or not _is_media_cdn_url(url):
-        item.enclosure_url = ""
-        item.enclosure_type = ""
-        return
-
-    ctype = bot.normalize_mime(item.enclosure_type)
-    if _is_pdf_url(url) or ctype == "application/pdf":
-        item.enclosure_type = "application/pdf"
-        return
-
-    guessed = mimetypes.guess_type(url)[0] or ""
-    if ctype.startswith("image/") or guessed.startswith("image/") or bot.looks_like_real_image(url):
-        item.enclosure_type = bot.normalize_mime(guessed or "image/jpeg")
+    best_image = _pick_best_image_url(image_urls)
+    if best_image:
+        guessed = mimetypes.guess_type(best_image)[0] or "image/jpeg"
+        item.enclosure_url = best_image
+        item.enclosure_type = bot.normalize_mime(guessed)
         return
 
     item.enclosure_url = ""
@@ -197,6 +215,54 @@ def _has_mirror_targets(item: bot.FeedItem, config: bot.Config) -> bool:
 
 def _should_process_item(item: bot.FeedItem, config: bot.Config) -> bool:
     return _has_mirror_targets(item, config) or _has_valid_photo(item) or _has_valid_pdf(item)
+
+
+def catchup_mirror_targets_only(self: bot.MirrorBot, feed_items: list[bot.FeedItem]) -> None:
+    """Only back-fill WordPress for indianaukrihelp mirror posts — never image-only feed items."""
+    if self.config.skip_wordpress or not self.wordpress.ready:
+        return
+    if not bot.parse_bool(os.environ.get("WP_CATCHUP"), True):
+        return
+
+    by_guid = {item.guid: item for item in feed_items}
+    pending_rows = self.state.list_published_without_wp_link(limit=12)
+    if not pending_rows:
+        return
+
+    eligible: list[tuple[Any, bot.FeedItem]] = []
+    for row in pending_rows:
+        item = by_guid.get(row["guid"])
+        if not item:
+            item = bot.feed_item_from_catchup_row(row, self.session)
+        item.text = bot.remove_spam_urls_from_text(item.text or "")
+        item.text = _strip_feed_channel_refs(item.text)
+        _normalize_media_enclosure(item)
+        if _has_mirror_targets(item, self.config):
+            eligible.append((row, item))
+        else:
+            LOGGER.info("Catch-up skipped (no indianaukrihelp mirror target): %s", row["guid"])
+
+    if not eligible:
+        return
+
+    LOGGER.info("WordPress catch-up: %s mirror-target item(s) missing post links.", len(eligible))
+    for row, item in eligible:
+        if self.time_budget_exceeded(reserve_seconds=60):
+            LOGGER.warning("Stopping WordPress catch-up to stay inside MAX_RUN_SECONDS.")
+            break
+        source_page_html, page_links = "", []
+        if self.config.fetch_source_for_links and item.source_url:
+            source_page_html, page_links = self.fetch_source_context(item.source_url)
+        wp_link = self.publish_wordpress_for_item(
+            item,
+            source_page_html=source_page_html,
+            page_links=page_links,
+        )
+        if wp_link:
+            self.state.set_wp_link(row["guid"], wp_link)
+            LOGGER.info("Catch-up published WordPress post: %s", wp_link)
+        elif not self.config.dry_run:
+            LOGGER.warning("Catch-up could not create WordPress post for %s", row["guid"])
 
 
 def _notify_admin(telegram: bot.TelegramClient, config: bot.Config, message: str) -> None:
@@ -276,7 +342,10 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
             return
 
         self.dispatch_telegram(item, wp_link, important_links, caption_source_url)
-        self.state.mark_published(item.guid, wp_link)
+        stored_wp_link = wp_link
+        if not has_targets and has_media and not wp_link:
+            stored_wp_link = MEDIA_ONLY_WP_MARKER
+        self.state.mark_published(item.guid, stored_wp_link)
 
         if source_replacements:
             mirror_lines = "\n".join(f"• {old} → {new}" for old, new in list(source_replacements.items())[:4])
@@ -309,6 +378,7 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
 
 def patch_mirror_bot() -> None:
     bot.MirrorBot.process_one = process_mirror_item
+    bot.MirrorBot.catchup_wordpress_links = catchup_mirror_targets_only
 
 
 def main() -> None:
