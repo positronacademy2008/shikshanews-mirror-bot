@@ -34,8 +34,10 @@ FEED_CHANNEL_LINE_HINTS = (
 )
 
 MEDIA_ONLY_WP_MARKER = "media-only"
+TELEGRAM_MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z][A-Za-z0-9_]{2,}")
 
 _original_catchup_wordpress_links = bot.MirrorBot.catchup_wordpress_links
+_original_build_caption = run_bot.build_caption
 
 
 def _title_key(value: str) -> str:
@@ -86,13 +88,24 @@ def _strip_media_urls(text: str, enclosure_url: str = "") -> str:
     return bot.normalize_whitespace(cleaned)
 
 
+def _telegram_handle_replace() -> str:
+    handle = os.environ.get("TELEGRAM_HANDLE_REPLACE", "@KapilRJ06").strip() or "@KapilRJ06"
+    return handle if handle.startswith("@") else f"@{handle}"
+
+
+def _replace_telegram_mentions(text: str) -> str:
+    """Swap feed/source @channel or @user mentions with the configured handle."""
+    replacement = _telegram_handle_replace()
+    return TELEGRAM_MENTION_RE.sub(replacement, text or "")
+
+
 def _strip_feed_channel_refs(text: str) -> str:
     def url_replace(match: re.Match[str]) -> str:
         url = bot.clean_url(match.group(1))
         return "" if _is_telegram_channel_url(url) else url
 
     cleaned = bot.URL_RE.sub(url_replace, text or "")
-    cleaned = re.sub(r"@[A-Za-z][A-Za-z0-9_]{2,}", "", cleaned)
+    cleaned = _replace_telegram_mentions(cleaned)
 
     kept: list[str] = []
     for raw_line in cleaned.splitlines():
@@ -277,6 +290,7 @@ def _notify_admin(telegram: bot.TelegramClient, config: bot.Config, message: str
 def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
     LOGGER.info("Processing feed item: %s", item.title[:100])
     try:
+        item.title = _replace_telegram_mentions(item.title)
         item.text = bot.remove_spam_urls_from_text(item.text)
         item.text = _strip_feed_channel_refs(item.text)
         item.text = _dedupe_title_lines(item.text, item.title)
@@ -386,8 +400,35 @@ def _bind_select_items_newest_first() -> None:
     bot.MirrorBot.select_items = wrapped  # type: ignore[method-assign]
 
 
+def build_caption_with_handle_replace(
+    title: str,
+    content_text: str,
+    fallback_text: str,
+    wp_link: str,
+    source_url: str,
+    important_links: list[bot.LinkInfo],
+    config: bot.Config,
+    limit: int,
+    enclosure_url: str = "",
+) -> str:
+    caption = _original_build_caption(
+        title,
+        content_text,
+        fallback_text,
+        wp_link,
+        source_url,
+        important_links,
+        config,
+        limit,
+        enclosure_url,
+    )
+    return _replace_telegram_mentions(caption)
+
+
 def patch_mirror_bot() -> None:
     _bind_select_items_newest_first()
+    run_bot.build_caption = build_caption_with_handle_replace
+    bot.build_caption = build_caption_with_handle_replace
     bot.MirrorBot.process_one = process_mirror_item
     bot.MirrorBot.catchup_wordpress_links = catchup_mirror_targets_only
 
@@ -406,6 +447,7 @@ def main() -> None:
     os.environ.setdefault("FOLLOW_LINE", "")
     os.environ.setdefault("FOLLOW_LINE_TG", "")
     os.environ.setdefault("FOLLOW_LINE_WA", "")
+    os.environ.setdefault("TELEGRAM_HANDLE_REPLACE", "@KapilRJ06")
     patch_mirror_bot()
     bot.main()
 

@@ -95,6 +95,7 @@ jobs:
           FOLLOW_LINE_WA: ""
           FOLLOW_LINE: ""
           ACADEMY_WEBSITE: https://positronacademy.in
+          TELEGRAM_HANDLE_REPLACE: "@KapilRJ06"
         run: python shiksha_mirror.py
 
       - name: Commit SQLite state
