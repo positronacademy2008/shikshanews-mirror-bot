@@ -88,8 +88,8 @@ jobs:
           WEB_FOLLOW_LINE: ""
           BRAND_IMAGES: "false"
           IMAGE_BRAND_NAME: POSITRON ACADEMY
-          IMAGE_BRAND_ADDRESS: "चौधरी के पास हॉस्पिटल, पांसल चौराहा,भीलवाड़ा"
-          IMAGE_BRAND_ADDRESS_LATIN: "Chaudhary Hospital ke paas, Pansal Chauraha, Bhilwara"
+          IMAGE_BRAND_ADDRESS: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"
+          IMAGE_BRAND_ADDRESS_LATIN: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"
           IMAGE_BRAND_CONTACT: "8104894648"
           FOLLOW_LINE_TG: ""
           FOLLOW_LINE_WA: ""
