@@ -561,6 +561,8 @@ def main() -> None:
     os.environ.setdefault("FOLLOW_LINE_TG", "")
     os.environ.setdefault("FOLLOW_LINE_WA", "")
     os.environ.setdefault("TELEGRAM_HANDLE_REPLACE", "@KapilRJ06")
+    os.environ.setdefault("MAX_ITEMS_PER_RUN", "25")
+    os.environ.setdefault("MAX_RUN_SECONDS", "1500")
     patch_mirror_bot()
     bot.main()
 
