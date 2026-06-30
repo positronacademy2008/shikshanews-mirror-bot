@@ -7,6 +7,8 @@ import os
 import re
 import time
 from typing import Any
+
+import requests
 from urllib.parse import urlparse
 
 import run_bot  # noqa: F401 — mirror sanitization + WP page builders
@@ -38,6 +40,7 @@ TELEGRAM_MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z][A-Za-z0-9_]{2,}")
 
 _original_catchup_wordpress_links = bot.MirrorBot.catchup_wordpress_links
 _original_build_caption = run_bot.build_caption
+_mirror_send_pdf_item = bot.MirrorBot.send_pdf_item
 
 
 def _title_key(value: str) -> str:
@@ -177,23 +180,100 @@ def _pick_best_image_url(image_urls: list[str]) -> str:
     return (full or image_urls)[0]
 
 
-def _normalize_media_enclosure(item: bot.FeedItem) -> None:
-    """Keep Telegram/RSS CDN photos and PDFs; prefer full-size files over preview thumbs."""
+def _set_image_enclosure(item: bot.FeedItem, url: str, content_type: str = "") -> None:
+    guessed = content_type or mimetypes.guess_type(url)[0] or "image/jpeg"
+    if not guessed.startswith("image/"):
+        guessed = "image/jpeg"
+    item.enclosure_url = url
+    item.enclosure_type = bot.normalize_mime(guessed)
+
+
+def _probe_remote_mime(url: str, session: requests.Session | None, feed_url: str) -> str:
+    if not url or not session:
+        return ""
+    headers = bot.default_headers(feed_url)
+    for method in ("head", "get"):
+        try:
+            if method == "head":
+                response = session.head(url, headers=headers, timeout=20, allow_redirects=True, verify=True)
+            else:
+                response = session.get(url, headers=headers, timeout=25, stream=True, verify=True)
+                response.raise_for_status()
+            ctype = bot.normalize_mime(response.headers.get("Content-Type", ""))
+            if ctype:
+                return ctype
+        except Exception:
+            continue
+    return ""
+
+
+def _normalize_media_enclosure(
+    item: bot.FeedItem,
+    session: requests.Session | None = None,
+    feed_url: str = "",
+) -> None:
+    """Keep Telegram/RSS CDN photos and PDFs; prefer real images over mislabeled .pdf attachments."""
     pdf_urls, image_urls = _collect_cdn_media_urls(item)
+    best_image = _pick_best_image_url(image_urls)
+
     if pdf_urls:
-        item.enclosure_url = pdf_urls[0]
+        primary_pdf = pdf_urls[0]
+        probed = _probe_remote_mime(primary_pdf, session, feed_url)
+        if probed.startswith("image/"):
+            _set_image_enclosure(item, primary_pdf, probed)
+            return
+
+        full_images = [url for url in image_urls if not _is_preview_media_url(url)]
+        if full_images:
+            _set_image_enclosure(item, full_images[0])
+            return
+
+        if (
+            best_image
+            and _is_preview_media_url(best_image)
+            and probed
+            and not probed.startswith("application/pdf")
+        ):
+            LOGGER.info(
+                "Using CDN preview image instead of mislabeled attachment for: %s",
+                item.title[:80],
+            )
+            _set_image_enclosure(item, best_image)
+            return
+
+        item.enclosure_url = primary_pdf
         item.enclosure_type = "application/pdf"
         return
 
-    best_image = _pick_best_image_url(image_urls)
     if best_image:
-        guessed = mimetypes.guess_type(best_image)[0] or "image/jpeg"
-        item.enclosure_url = best_image
-        item.enclosure_type = bot.normalize_mime(guessed)
+        _set_image_enclosure(item, best_image)
         return
 
     item.enclosure_url = ""
     item.enclosure_type = ""
+
+
+def _enrich_media_attachment(
+    item: bot.FeedItem,
+    session: requests.Session | None,
+    feed_url: str,
+) -> None:
+    _normalize_media_enclosure(item, session, feed_url)
+    if item.enclosure_url and (_has_valid_photo(item) or _has_valid_pdf(item)):
+        return
+
+    bot.enrich_item_media(item)
+    _normalize_media_enclosure(item, session, feed_url)
+    if item.enclosure_url or not session or not item.source_url:
+        return
+
+    embed_text, embed_html, img_url, img_type = bot.fetch_telegram_embed_content(item.source_url, session)
+    if embed_text and not (item.text or "").strip():
+        item.text = embed_text
+    if embed_html and not item.html_content:
+        item.html_content = embed_html
+    if img_url:
+        _set_image_enclosure(item, img_url, img_type)
 
 
 def _has_valid_pdf(item: bot.FeedItem) -> bool:
@@ -201,16 +281,48 @@ def _has_valid_pdf(item: bot.FeedItem) -> bool:
     if not url or not _is_media_cdn_url(url):
         return False
     ctype = bot.normalize_mime(item.enclosure_type)
+    if ctype.startswith("image/"):
+        return False
     return ctype == "application/pdf" or _is_pdf_url(url)
 
 
 def _has_valid_photo(item: bot.FeedItem) -> bool:
     url = item.enclosure_url or ""
-    if not url or not _is_media_cdn_url(url) or _is_pdf_url(url):
+    if not url or not _is_media_cdn_url(url):
         return False
     ctype = bot.normalize_mime(item.enclosure_type)
+    if ctype.startswith("image/"):
+        return True
     guessed = mimetypes.guess_type(url)[0] or ""
-    return ctype.startswith("image/") or guessed.startswith("image/")
+    if guessed.startswith("image/"):
+        return True
+    if _is_pdf_url(url):
+        return False
+    return bot.looks_like_real_image(url)
+
+
+def send_pdf_item_with_image_fallback(
+    self: bot.MirrorBot,
+    item: bot.FeedItem,
+    media_caption: str,
+    fallback_text: str,
+) -> None:
+    try:
+        response = self.session.get(
+            item.enclosure_url,
+            headers=bot.default_headers(self.config.feed_url),
+            timeout=60,
+            verify=self.config.verify_ssl,
+        )
+        response.raise_for_status()
+        content_type = bot.normalize_mime(response.headers.get("Content-Type", ""))
+        if content_type.startswith("image/"):
+            item.enclosure_type = content_type
+            run_bot.send_image_item(self, item, media_caption, fallback_text)
+            return
+    except Exception as exc:
+        LOGGER.warning("PDF preflight failed for %s: %s", item.title[:80], exc)
+    _mirror_send_pdf_item(self, item, media_caption, fallback_text)
 
 
 def _has_mirror_targets(item: bot.FeedItem, config: bot.Config) -> bool:
@@ -249,7 +361,7 @@ def catchup_mirror_targets_only(self: bot.MirrorBot, feed_items: list[bot.FeedIt
             item = bot.feed_item_from_catchup_row(row, self.session)
         item.text = bot.remove_spam_urls_from_text(item.text or "")
         item.text = _strip_feed_channel_refs(item.text)
-        _normalize_media_enclosure(item)
+        _enrich_media_attachment(item, self.session, self.config.feed_url)
         if _has_mirror_targets(item, self.config):
             eligible.append((row, item))
         else:
@@ -301,7 +413,7 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
             self.state.mark_skipped(item.guid, "Advertisement/promotional message")
             return
 
-        _normalize_media_enclosure(item)
+        _enrich_media_attachment(item, self.session, self.config.feed_url)
         media_enclosure_url = item.enclosure_url
         media_enclosure_type = item.enclosure_type
         has_targets = _has_mirror_targets(item, self.config)
@@ -429,6 +541,7 @@ def patch_mirror_bot() -> None:
     _bind_select_items_newest_first()
     run_bot.build_caption = build_caption_with_handle_replace
     bot.build_caption = build_caption_with_handle_replace
+    bot.MirrorBot.send_pdf_item = send_pdf_item_with_image_fallback
     bot.MirrorBot.process_one = process_mirror_item
     bot.MirrorBot.catchup_wordpress_links = catchup_mirror_targets_only
 
