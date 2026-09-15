@@ -142,7 +142,10 @@ IMPORTANT_LABEL_HINTS = (
 )
 
 AI_SYSTEM_PROMPT = """You write Indian government job, exam, result, and education updates for Positron Academy.
-Use clear Hinglish. RECREATE the update in fresh wording — never copy source sentences verbatim.
+Write in natural Hindi using Devanagari script only (देवनागरी) — जैसे भर्ती, परीक्षा, आवेदन, परिणाम.
+NEVER write Hindi in English letters. Do not use Hinglish/Roman Hindi such as "bharti", "pariksha", "aavedan", "result nikal gaya".
+English letters are allowed only for official exam/board names and short forms (CTET, RSSB, RPSC, SSC, RRB, RUHS, PDF, LDC), numbers, dates, and URLs.
+RECREATE the update in fresh wording — never copy source sentences verbatim.
 Keep every fact, date, number, fee, eligibility rule, deadline, exam name, and organisation name accurate.
 Do not invent or guess missing details.
 Never mention indianaukrihelp.com or other news-aggregator/blog links.
@@ -1362,7 +1365,9 @@ class AIRewriter:
         return self._rewrite(
             source_text,
             heading
-            + "Recreate this update as 4-6 fresh Hinglish bullet points (each starting with -). "
+            + "इस अपडेट को 4-6 ताज़ा हिंदी बुलेट पॉइंट में लिखो (हर पंक्ति - से शुरू हो). "
+            "पूरी भाषा देवनागरी हिंदी में हो. रोमन हिंदी/हिंग्लिश मत लिखो "
+            "(जैसे bharti, pariksha, aavedan गलत हैं; भर्ती, परीक्षा, आवेदन सही हैं). "
             "Do not copy source wording. Keep facts, dates, numbers, and deadlines accurate. "
             "Do not include any URLs in your answer.",
             is_html=False,
@@ -1373,10 +1378,11 @@ class AIRewriter:
         return self._rewrite(
             source_text,
             f"Title: {title}\n\n"
-            "Recreate this update as clean WordPress HTML with exactly these sections:\n"
-            "<h1>title</h1>\n"
-            '<section class="pa-summary"><h2>Quick Summary</h2><ul><li>3-5 recreated bullet points</li></ul></section>\n'
-            '<section class="pa-details"><h2>Key Details</h2><p>2-4 short recreated paragraphs with facts</p></section>\n'
+            "इस अपडेट को साफ़ WordPress HTML में देवनागरी हिंदी में लिखो. रोमन हिंदी/हिंग्लिश मत लिखो.\n"
+            "Exactly these sections:\n"
+            "<h1>हिंदी शीर्षक</h1>\n"
+            '<section class="pa-summary"><h2>संक्षिप्त जानकारी</h2><ul><li>3-5 recreated Hindi bullet points</li></ul></section>\n'
+            '<section class="pa-details"><h2>मुख्य विवरण</h2><p>2-4 short recreated Hindi paragraphs with facts</p></section>\n'
             "Do not copy source sentences. Do not include <a> links or indianaukrihelp references.",
             is_html=True,
             recreate=True,
@@ -1413,6 +1419,31 @@ class AIRewriter:
                 )
                 result = response.choices[0].message.content or ""
                 result = strip_markdown_fence(result)
+                if recreate and not is_mostly_devanagari(result):
+                    LOGGER.warning("AI output was not Devanagari Hindi; retrying with a stricter instruction.")
+                    retry = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": AI_SYSTEM_PROMPT},
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"{instruction}\n\n"
+                                    "IMPORTANT: Reply only in Hindi Devanagari script. "
+                                    "Do not transliterate Hindi into English letters.\n\n"
+                                    f"{source[:8000]}"
+                                ),
+                            },
+                        ],
+                        temperature=0.3,
+                        timeout=float(self.config.groq_timeout),
+                    )
+                    retry_text = strip_markdown_fence(retry.choices[0].message.content or "")
+                    if is_mostly_devanagari(retry_text):
+                        result = retry_text
+                    else:
+                        LOGGER.warning("AI retry still not Devanagari Hindi; using cleaned original content.")
+                        return source
                 if not fact_safety_check(source, result, is_html=is_html, allow_missing_urls=recreate):
                     LOGGER.warning("AI output failed fact-safety checks; using cleaned original content.")
                     return source
@@ -1448,6 +1479,20 @@ def count_html_assets(markup: str) -> tuple[int, int]:
     images = len([img for img in soup.find_all("img") if img.get("src")])
     links = len([link for link in soup.find_all("a") if link.get("href")])
     return images, links
+
+
+DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
+
+
+def is_mostly_devanagari(value: str) -> bool:
+    """True when letter-content is Hindi Devanagari, not Roman/Hinglish."""
+    plain = URL_RE.sub(" ", strip_tags(value or ""))
+    devanagari = len(DEVANAGARI_RE.findall(plain))
+    latin = len(LATIN_LETTER_RE.findall(plain))
+    if devanagari + latin < 24:
+        return devanagari > 0 or latin == 0
+    return devanagari >= latin
 
 
 def fact_safety_check(
