@@ -70,7 +70,7 @@ SPAM_TEXT_HINTS = (
     "promo code",
     "refer and earn",
 )
-HARD_SKIP_PHRASES = ("शिक्षा विभाग समाचार",)
+HARD_SKIP_PHRASES: tuple[str, ...] = ()
 DEFAULT_SOURCE_PAGE_HOSTS = ("indianaukrihelp.com",)
 DEFAULT_PROTECTED_IMAGE_HOSTS = (
     "tg.i-c-a.su",
@@ -192,6 +192,7 @@ class Config:
     bot_token: str
     dest_channels: list[str]
     feed_url: str
+    feed_fallback_urls: tuple[str, ...] = ()
     wp_url: str = ""
     wp_user: str = ""
     wp_pass: str = ""
@@ -240,6 +241,7 @@ class Config:
             bot_token=os.environ["BOT_TOKEN"].strip(),
             dest_channels=channels,
             feed_url=os.environ["FEED_URL"].strip(),
+            feed_fallback_urls=parse_csv_tuple(os.environ.get("FEED_FALLBACK_URLS"), ()),
             wp_url=os.environ.get("WP_URL", "").strip(),
             wp_user=os.environ.get("WP_USER", "").strip(),
             wp_pass=os.environ.get("WP_PASS", "").strip(),
@@ -323,6 +325,7 @@ def build_session(config: Config) -> requests.Session:
 
 
 FLOOD_WAIT_RE = re.compile(r"FLOOD_WAIT_(\d+)", re.I)
+UNLOCK_WAIT_RE = re.compile(r"Time to unlock access:\s*(?:(\d+):)?(\d+):(\d+)", re.I)
 
 
 def flood_wait_seconds(response: requests.Response | None = None, error_text: str = "") -> int:
@@ -331,12 +334,23 @@ def flood_wait_seconds(response: requests.Response | None = None, error_text: st
         chunks.append(response.text or "")
         if response.reason:
             chunks.append(response.reason)
+        retry_after = response.headers.get("Retry-After", "")
+        if retry_after:
+            chunks.append(retry_after)
     if error_text:
         chunks.append(error_text)
     for chunk in chunks:
         match = FLOOD_WAIT_RE.search(chunk)
         if match:
             return max(1, int(match.group(1)))
+        match = UNLOCK_WAIT_RE.search(chunk)
+        if match:
+            hours = int(match.group(1) or 0)
+            minutes = int(match.group(2) or 0)
+            seconds = int(match.group(3) or 0)
+            return max(1, hours * 3600 + minutes * 60 + seconds)
+        if chunk.strip().isdigit():
+            return max(1, int(chunk.strip()))
     return 0
 
 
@@ -356,17 +370,16 @@ def request_with_flood_retry(
             response = session.request(method, url, **kwargs)
             last_response = response
             if response.status_code == 429:
-                wait = flood_wait_seconds(response)
-                if wait:
-                    LOGGER.warning(
-                        "Rate limited (%ss) on %s; sleeping and retrying %s/%s",
-                        wait,
-                        label,
-                        attempt,
-                        max_attempts,
-                    )
-                    time.sleep(wait + 1)
-                    continue
+                wait = min(flood_wait_seconds(response) or 15, 90)
+                LOGGER.warning(
+                    "Rate limited (%ss) on %s; sleeping and retrying %s/%s",
+                    wait,
+                    label,
+                    attempt,
+                    max_attempts,
+                )
+                time.sleep(wait + 1)
+                continue
             response.raise_for_status()
             return response
         except requests.HTTPError as exc:
@@ -1815,19 +1828,44 @@ class MirrorBot:
     def close(self) -> None:
         self.state.close()
 
+    def feed_urls(self) -> list[str]:
+        urls = [self.config.feed_url]
+        for url in self.config.feed_fallback_urls:
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
     def fetch_feed(self) -> str:
-        LOGGER.info("Fetching feed: %s", self.config.feed_url)
-        response = request_with_flood_retry(
-            self.session,
-            "GET",
-            self.config.feed_url,
-            max_attempts=self.config.flood_max_retries,
-            label="feed_fetch",
-            headers=default_headers(),
-            timeout=30,
-            verify=self.config.verify_ssl,
-        )
-        return response.text
+        last_error: Exception | None = None
+        for url in self.feed_urls():
+            LOGGER.info("Fetching feed: %s", url)
+            try:
+                response = request_with_flood_retry(
+                    self.session,
+                    "GET",
+                    url,
+                    max_attempts=self.config.flood_max_retries,
+                    label=f"feed_fetch:{url}",
+                    headers=default_headers(),
+                    timeout=30,
+                    verify=self.config.verify_ssl,
+                )
+            except requests.HTTPError as exc:
+                body = ""
+                if exc.response is not None:
+                    body = (exc.response.text or "")[:300]
+                LOGGER.warning("Feed %s failed: %s %s", url, exc, body)
+                last_error = exc
+                if exc.response is not None and exc.response.status_code in {403, 404}:
+                    continue
+                raise
+            text = response.text or ""
+            if "CHANNEL_PRIVATE" in text and "<item" not in text.lower() and "<entry" not in text.lower():
+                LOGGER.warning("Feed %s reported CHANNEL_PRIVATE; trying next source", url)
+                last_error = RuntimeError(f"CHANNEL_PRIVATE for {url}")
+                continue
+            return text
+        raise last_error or RuntimeError("All feed URLs failed")
 
     def run(self) -> None:
         LOGGER.info("Source RSS feed: %s", self.config.feed_url)
@@ -2262,6 +2300,7 @@ def main() -> None:
                 telegram.send_admin_critical(str(exc))
         except Exception:
             pass
+        raise
     finally:
         if bot is not None:
             bot.close()

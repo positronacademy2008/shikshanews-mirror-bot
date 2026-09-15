@@ -42,7 +42,8 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEST_CHANNEL: "@testsourcechannelA"
-          FEED_URL: https://tg.i-c-a.su/rss/shikshanewsrajasthan
+          FEED_URL: https://tg.i-c-a.su/rss/ShikshaVibhag
+          DIAGNOSE_SKIP_FEED: "true"
           WP_URL: https://positronacademy.in
           WP_USER: ${{ secrets.WP_USER }}
           WP_PASS: ${{ secrets.WP_PASS }}
@@ -61,7 +62,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DEST_CHANNEL: "@testsourcechannelA"
-          FEED_URL: https://tg.i-c-a.su/rss/shikshanewsrajasthan
+          FEED_URL: https://tg.i-c-a.su/rss/ShikshaVibhag
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WP_URL: https://positronacademy.in
           WP_USER: ${{ secrets.WP_USER }}
@@ -84,7 +85,7 @@ jobs:
           FETCH_SOURCE_FOR_LINKS: "true"
           PAGE_BUILD_MODE: mirror
           SOURCE_PAGE_HOSTS: indianaukrihelp.com
-          SKIP_MESSAGE_PHRASES: "शिक्षा विभाग समाचार"
+          SKIP_MESSAGE_PHRASES: ""
           WEB_FOLLOW_LINE: ""
           BRAND_IMAGES: "false"
           IMAGE_BRAND_NAME: POSITRON ACADEMY

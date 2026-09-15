@@ -55,28 +55,31 @@ def main() -> int:
             print(f"Dest FAIL: {channel} -> {exc}")
             ok = False
 
-    try:
-        response = bot.request_with_flood_retry(
-            session,
-            "GET",
-            config.feed_url,
-            max_attempts=config.flood_max_retries,
-            label="diagnose_feed",
-            headers=bot.default_headers(),
-            timeout=30,
-            verify=config.verify_ssl,
-        )
-        items = bot.parse_feed(response.text, config.feed_url)
-        print(f"Feed OK: {len(items)} item(s)")
-        if items:
-            sample = items[0]
-            media = sample.enclosure_url or "(text only)"
-            print(f"Latest: {sample.title[:90]}")
-            print(f"  guid={sample.guid}")
-            print(f"  media={media}")
-    except Exception as exc:
-        print(f"Feed WARN: {exc}")
-        print("Bot may still run on the next retry window.")
+    if bot.parse_bool(os.environ.get("DIAGNOSE_SKIP_FEED"), False):
+        print("Feed check skipped (avoids RSS rate-limit before the bot run).")
+    else:
+        try:
+            response = bot.request_with_flood_retry(
+                session,
+                "GET",
+                config.feed_url,
+                max_attempts=config.flood_max_retries,
+                label="diagnose_feed",
+                headers=bot.default_headers(),
+                timeout=30,
+                verify=config.verify_ssl,
+            )
+            items = bot.parse_feed(response.text, config.feed_url)
+            print(f"Feed OK: {len(items)} item(s)")
+            if items:
+                sample = items[0]
+                media = sample.enclosure_url or "(text only)"
+                print(f"Latest: {sample.title[:90]}")
+                print(f"  guid={sample.guid}")
+                print(f"  media={media}")
+        except Exception as exc:
+            print(f"Feed WARN: {exc}")
+            print("Bot may still run on the next retry window.")
 
     if config.wordpress_ready and not config.skip_wordpress:
         try:
