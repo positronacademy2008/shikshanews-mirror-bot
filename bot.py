@@ -71,6 +71,8 @@ SPAM_TEXT_HINTS = (
     "refer and earn",
 )
 HARD_SKIP_PHRASES: tuple[str, ...] = ()
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+DEFAULT_GROQ_FALLBACK_MODELS = ("openai/gpt-oss-120b",)
 DEFAULT_SOURCE_PAGE_HOSTS = ("indianaukrihelp.com",)
 DEFAULT_PROTECTED_IMAGE_HOSTS = (
     "tg.i-c-a.su",
@@ -217,7 +219,8 @@ class Config:
     fetch_source_for_links: bool = True
     protected_image_hosts: tuple[str, ...] = DEFAULT_PROTECTED_IMAGE_HOSTS
     skip_message_phrases: tuple[str, ...] = HARD_SKIP_PHRASES
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = DEFAULT_GROQ_MODEL
+    groq_fallback_models: tuple[str, ...] = DEFAULT_GROQ_FALLBACK_MODELS
     groq_timeout: int = 20
     flood_max_retries: int = 6
     item_delay_seconds: int = 3
@@ -269,7 +272,11 @@ class Config:
                 DEFAULT_PROTECTED_IMAGE_HOSTS,
             ),
             skip_message_phrases=parse_csv_tuple(os.environ.get("SKIP_MESSAGE_PHRASES"), HARD_SKIP_PHRASES),
-            groq_model=os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant",
+            groq_model=os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL,
+            groq_fallback_models=parse_csv_tuple(
+                os.environ.get("GROQ_FALLBACK_MODELS"),
+                DEFAULT_GROQ_FALLBACK_MODELS,
+            ),
             groq_timeout=parse_int(os.environ.get("GROQ_TIMEOUT"), 20, minimum=5),
             flood_max_retries=parse_int(os.environ.get("FLOOD_MAX_RETRIES"), 6, minimum=1),
             item_delay_seconds=parse_int(os.environ.get("ITEM_DELAY_SECONDS"), 3, minimum=0),
@@ -1311,6 +1318,7 @@ class AIRewriter:
         self.config = config
         self.client: Any = None
         self.disabled_reason = ""
+        self.active_model = config.groq_model
         if not config.groq_api_key:
             return
         if OpenAI is None:
@@ -1322,6 +1330,13 @@ class AIRewriter:
             max_retries=0,
             timeout=float(config.groq_timeout),
         )
+
+    def groq_models(self) -> list[str]:
+        models: list[str] = []
+        for model in (self.active_model, self.config.groq_model, *self.config.groq_fallback_models):
+            if model and model not in models:
+                models.append(model)
+        return models
 
     @property
     def enabled(self) -> bool:
@@ -1372,31 +1387,41 @@ class AIRewriter:
     ) -> str:
         if not self.enabled:
             return source
-        try:
-            response = self.client.chat.completions.create(
-                model=self.config.groq_model,
-                messages=[
-                    {"role": "system", "content": AI_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"{instruction}\n\n{source[:8000]}"},
-                ],
-                temperature=0.45 if recreate else (0.25 if is_html else 0.4),
-                timeout=float(self.config.groq_timeout),
-            )
-            result = response.choices[0].message.content or ""
-            result = strip_markdown_fence(result)
-            if not fact_safety_check(source, result, is_html=is_html, allow_missing_urls=recreate):
-                LOGGER.warning("AI output failed fact-safety checks; using cleaned original content.")
+        last_error: Exception | None = None
+        for model in self.groq_models():
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": AI_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"{instruction}\n\n{source[:8000]}"},
+                    ],
+                    temperature=0.45 if recreate else (0.25 if is_html else 0.4),
+                    timeout=float(self.config.groq_timeout),
+                )
+                result = response.choices[0].message.content or ""
+                result = strip_markdown_fence(result)
+                if not fact_safety_check(source, result, is_html=is_html, allow_missing_urls=recreate):
+                    LOGGER.warning("AI output failed fact-safety checks; using cleaned original content.")
+                    return source
+                if model != self.config.groq_model:
+                    LOGGER.info("Groq model %s unavailable; using %s", self.config.groq_model, model)
+                self.active_model = model
+                return result
+            except Exception as exc:
+                last_error = exc
+                error = str(exc).lower()
+                if "429" in error or "rate limit" in error or "too many requests" in error:
+                    self.disabled_reason = "rate limited"
+                    LOGGER.warning("AI rewriting is rate-limited; disabling AI rewriting for the rest of this run.")
+                    return source
+                if "model_not_found" in error or "does not exist" in error or "not have access" in error:
+                    LOGGER.warning("Groq model %s unavailable; trying next. Error: %s", model, exc)
+                    continue
+                LOGGER.warning("AI rewriting failed; using cleaned original content. Error: %s", exc)
                 return source
-            return result
-        except Exception as exc:
-            error = str(exc)
-            lower_error = error.lower()
-            if "429" in lower_error or "rate limit" in lower_error or "too many requests" in lower_error:
-                self.disabled_reason = "rate limited"
-                LOGGER.warning("AI rewriting is rate-limited; disabling AI rewriting for the rest of this run.")
-                return source
-            LOGGER.warning("AI rewriting failed; using cleaned original content. Error: %s", exc)
-            return source
+        LOGGER.warning("AI rewriting failed; using cleaned original content. Error: %s", last_error)
+        return source
 
 
 def strip_markdown_fence(value: str) -> str:

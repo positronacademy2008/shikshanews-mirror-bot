@@ -64,6 +64,8 @@ jobs:
           DEST_CHANNEL: "@testsourcechannelA"
           FEED_URL: https://tg.i-c-a.su/rss/ShikshaVibhag
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: openai/gpt-oss-20b
+          GROQ_FALLBACK_MODELS: openai/gpt-oss-120b
           WP_URL: https://positronacademy.in
           WP_USER: ${{ secrets.WP_USER }}
           WP_PASS: ${{ secrets.WP_PASS }}
