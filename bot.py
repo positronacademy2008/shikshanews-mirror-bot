@@ -387,6 +387,18 @@ def request_with_flood_retry(
                 )
                 time.sleep(wait + 1)
                 continue
+            if response.status_code in {500, 502, 503, 504} and attempt < max_attempts:
+                wait = min(8 * attempt, 30)
+                LOGGER.warning(
+                    "HTTP %s on %s; sleeping %ss and retrying %s/%s",
+                    response.status_code,
+                    label,
+                    wait,
+                    attempt,
+                    max_attempts,
+                )
+                time.sleep(wait)
+                continue
             response.raise_for_status()
             return response
         except requests.HTTPError as exc:
