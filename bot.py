@@ -71,8 +71,8 @@ SPAM_TEXT_HINTS = (
     "refer and earn",
 )
 HARD_SKIP_PHRASES: tuple[str, ...] = ()
-DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
-DEFAULT_GROQ_FALLBACK_MODELS = ("openai/gpt-oss-120b",)
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_GROQ_FALLBACK_MODELS = ("openai/gpt-oss-20b",)
 DEFAULT_SOURCE_PAGE_HOSTS = ("indianaukrihelp.com",)
 DEFAULT_PROTECTED_IMAGE_HOSTS = (
     "tg.i-c-a.su",
