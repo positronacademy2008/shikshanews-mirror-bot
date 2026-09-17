@@ -671,7 +671,7 @@ def main() -> None:
     os.environ.setdefault("FEED_URL", "https://tg.i-c-a.su/rss/ShikshaVibhag")
     os.environ.setdefault(
         "FEED_FALLBACK_URLS",
-        "https://tg.i-c-a.su/rss/ShikshaNewsRajasthan,https://t.me/s/ShikshaNewsRajasthan,https://indianaukrihelp.com/feed/",
+        "https://tg.i-c-a.su/rss/ShikshaNewsRajasthan,https://t.me/s/ShikshaNewsRajasthan,https://indianaukrihelp.com/feed/,https://indianaukrihelp.com/wp-json/wp/v2/posts?per_page=10&_embed=1",
     )
     os.environ.setdefault("DEST_CHANNEL", "@testsourcechannelA")
     os.environ.setdefault("SOURCE_PAGE_HOSTS", "indianaukrihelp.com")

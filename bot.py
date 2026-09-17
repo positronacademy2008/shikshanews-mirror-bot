@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import io
+import json
 import logging
 import mimetypes
 import os
@@ -1658,7 +1659,65 @@ def parse_telegram_preview(html_data: str, page_url: str) -> list[FeedItem]:
     return items
 
 
+def parse_wordpress_json(raw: str, feed_url: str) -> list[FeedItem]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    posts = data if isinstance(data, list) else data.get("posts") or data.get("data") or []
+    if not isinstance(posts, list):
+        return []
+    items: list[FeedItem] = []
+    for post in posts:
+        if not isinstance(post, dict):
+            continue
+        title_raw = post.get("title")
+        if isinstance(title_raw, dict):
+            title_raw = title_raw.get("rendered", "")
+        title = remove_prefixes(strip_tags(str(title_raw or ""))) or "Educational Update"
+        html_content = ""
+        content = post.get("content")
+        if isinstance(content, dict):
+            html_content = content.get("rendered", "") or ""
+        elif isinstance(content, str):
+            html_content = content
+        link = str(post.get("link") or post.get("guid") or feed_url)
+        if isinstance(post.get("guid"), dict):
+            link = str(post.get("guid", {}).get("rendered") or link)
+        guid = str(post.get("id") or link)
+        text = html_to_text_with_links(html_content, link)
+        text = remove_prefixes(text)
+        if title and text and title.lower() not in text[:160].lower():
+            text = normalize_whitespace(f"{title}\n\n{text}")
+        enclosure_url, enclosure_type = "", ""
+        featured = post.get("_embedded", {}).get("wp:featuredmedia") if isinstance(post.get("_embedded"), dict) else None
+        if isinstance(featured, list) and featured:
+            source = featured[0].get("source_url") or ""
+            mime = featured[0].get("mime_type") or ""
+            if source:
+                enclosure_url, enclosure_type = safe_url(source, link), normalize_mime(mime)
+        content_hash = sha256_text("|".join([title, text, html_content, link, enclosure_url]))
+        items.append(
+            FeedItem(
+                guid=guid,
+                title=title[:180],
+                text=text,
+                html_content=html_content,
+                source_url=link,
+                enclosure_url=enclosure_url,
+                enclosure_type=enclosure_type,
+                content_hash=content_hash,
+            )
+        )
+    return items
+
+
 def parse_feed_or_preview(raw: str, feed_url: str) -> list[FeedItem]:
+    stripped = (raw or "").lstrip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        items = parse_wordpress_json(raw, feed_url)
+        if items:
+            return items
     if "tgme_widget_message" in raw:
         return parse_telegram_preview(raw, feed_url)
     return parse_feed(raw, feed_url)
