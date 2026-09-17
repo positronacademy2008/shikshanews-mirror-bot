@@ -433,21 +433,29 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
         source_replacements: dict[str, str] = {}
 
         if has_targets:
-            source_replacements = self.create_source_pages(
-                item,
-                existing_wp_link=wp_link,
-                initial_source_html=source_page_html,
-                initial_page_links=page_links,
-            )
-            if not source_replacements:
-                raise RuntimeError("WordPress mirror did not return replacement links")
-            item.text = bot.apply_link_replacements_text(item.text, source_replacements)
-            item.html_content = bot.apply_link_replacements_html(
-                item.html_content, source_replacements, item.source_url
-            )
-            wp_link = wp_link or next(iter(source_replacements.values()))
-            if wp_link:
-                self.state.set_wp_link(item.guid, wp_link)
+            try:
+                source_replacements = self.create_source_pages(
+                    item,
+                    existing_wp_link=wp_link,
+                    initial_source_html=source_page_html,
+                    initial_page_links=page_links,
+                )
+            except Exception as wp_exc:
+                LOGGER.warning(
+                    "WordPress mirror failed; still sending to Telegram. Error: %s",
+                    wp_exc,
+                )
+                source_replacements = {}
+            if source_replacements:
+                item.text = bot.apply_link_replacements_text(item.text, source_replacements)
+                item.html_content = bot.apply_link_replacements_html(
+                    item.html_content, source_replacements, item.source_url
+                )
+                wp_link = wp_link or next(iter(source_replacements.values()))
+                if wp_link:
+                    self.state.set_wp_link(item.guid, wp_link)
+            else:
+                LOGGER.warning("No WordPress replacement links for %s; sending original source URLs", item.title[:80])
 
         item.text = _dedupe_title_lines(item.text, item.title)
         item.enclosure_url = media_enclosure_url
