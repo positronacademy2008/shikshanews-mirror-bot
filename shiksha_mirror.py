@@ -24,6 +24,17 @@ MEDIA_URL_HINTS = (
     "tg.i-c-a.su",
     "telegram.org/file",
 )
+OWN_SITE_HOSTS = ("positronacademy.in",)
+FILE_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+LINK_LINE_PREFIXES = (
+    "official:",
+    "official/source",
+    "website:",
+    "source:",
+    "pdf:",
+    "full post:",
+    "📌 full post",
+)
 
 FEED_CHANNEL_LINE_HINTS = (
     "join telegram",
@@ -56,6 +67,35 @@ def _is_media_cdn_url(url: str) -> bool:
     return any(hint in lower for hint in MEDIA_URL_HINTS)
 
 
+def _is_own_site_url(url: str) -> bool:
+    host = urlparse(bot.clean_url(url)).netloc.lower().lstrip("www.")
+    return any(host == item or host.endswith("." + item) for item in OWN_SITE_HOSTS)
+
+
+def _allowed_site_url(wp_link: str) -> str:
+    url = bot.clean_url(wp_link or "")
+    if not url or url == MEDIA_ONLY_WP_MARKER:
+        return ""
+    return url if _is_own_site_url(url) else ""
+
+
+def _is_attachable_image_url(url: str) -> bool:
+    clean = bot.clean_url(url)
+    if not clean or not bot.looks_like_real_image(clean):
+        return False
+    lower = clean.lower()
+    path = urlparse(lower).path
+    if _is_media_cdn_url(clean):
+        return True
+    if "/wp-content/uploads/" in lower:
+        return True
+    return path.endswith(FILE_IMAGE_EXTS)
+
+
+def _is_attachable_pdf_url(url: str) -> bool:
+    return _is_pdf_url(url)
+
+
 def _is_telegram_channel_url(url: str) -> bool:
     lower = bot.clean_url(url).lower()
     return "t.me/" in lower or "telegram.me/" in lower
@@ -65,13 +105,11 @@ def _is_media_attachment_url(url: str, enclosure_url: str = "") -> bool:
     if not url:
         return False
     clean = bot.clean_url(url)
-    if not _is_media_cdn_url(clean):
-        return False
     if enclosure_url and clean == bot.clean_url(enclosure_url):
         return True
-    if _is_pdf_url(clean):
+    if _is_attachable_pdf_url(clean):
         return True
-    return bot.looks_like_real_image(clean)
+    return _is_attachable_image_url(clean)
 
 
 def _strip_media_urls(text: str, enclosure_url: str = "") -> str:
@@ -156,20 +194,28 @@ def _is_preview_media_url(url: str) -> bool:
     return "preview" in lower or "thumb" in lower
 
 
-def _collect_cdn_media_urls(item: bot.FeedItem) -> tuple[list[str], list[str]]:
+def _collect_media_urls(item: bot.FeedItem) -> tuple[list[str], list[str]]:
     pdf_urls: list[str] = []
     image_urls: list[str] = []
-    sources = [item.enclosure_url or "", item.text or "", item.html_content or ""]
-    for chunk in sources:
+
+    def add_url(url: str) -> None:
+        clean = bot.clean_url(url)
+        if not clean:
+            return
+        if _is_attachable_pdf_url(clean):
+            if clean not in pdf_urls:
+                pdf_urls.append(clean)
+        elif _is_attachable_image_url(clean) and clean not in image_urls:
+            image_urls.append(clean)
+
+    add_url(item.enclosure_url or "")
+    for chunk in (item.text or "", item.html_content or ""):
         for url in bot.extract_urls(chunk):
-            clean = bot.clean_url(url)
-            if not _is_media_cdn_url(clean):
-                continue
-            if _is_pdf_url(clean):
-                if clean not in pdf_urls:
-                    pdf_urls.append(clean)
-            elif bot.looks_like_real_image(clean) and clean not in image_urls:
-                image_urls.append(clean)
+            add_url(url)
+    if item.html_content:
+        soup = bot.make_soup(item.html_content, "html.parser")
+        for img in soup.find_all("img"):
+            add_url(bot.image_candidate_from_tag(img, item.source_url or ""))
     return pdf_urls, image_urls
 
 
@@ -212,20 +258,23 @@ def _normalize_media_enclosure(
     session: requests.Session | None = None,
     feed_url: str = "",
 ) -> None:
-    """Keep Telegram/RSS CDN photos and PDFs; prefer real images over mislabeled .pdf attachments."""
-    pdf_urls, image_urls = _collect_cdn_media_urls(item)
+    """Keep photos and PDFs from Telegram CDN, WordPress uploads, or direct file URLs."""
+    pdf_urls, image_urls = _collect_media_urls(item)
     best_image = _pick_best_image_url(image_urls)
+    item.extra_pdf_urls = []
 
     if pdf_urls:
         primary_pdf = pdf_urls[0]
         probed = _probe_remote_mime(primary_pdf, session, feed_url)
         if probed.startswith("image/"):
             _set_image_enclosure(item, primary_pdf, probed)
+            item.extra_pdf_urls = pdf_urls[1:]
             return
 
         full_images = [url for url in image_urls if not _is_preview_media_url(url)]
         if full_images:
             _set_image_enclosure(item, full_images[0])
+            item.extra_pdf_urls = pdf_urls
             return
 
         if (
@@ -239,10 +288,12 @@ def _normalize_media_enclosure(
                 item.title[:80],
             )
             _set_image_enclosure(item, best_image)
+            item.extra_pdf_urls = pdf_urls
             return
 
         item.enclosure_url = primary_pdf
         item.enclosure_type = "application/pdf"
+        item.extra_pdf_urls = pdf_urls[1:]
         return
 
     if best_image:
@@ -278,27 +329,24 @@ def _enrich_media_attachment(
 
 def _has_valid_pdf(item: bot.FeedItem) -> bool:
     url = item.enclosure_url or ""
-    if not url or not _is_media_cdn_url(url):
+    if not url:
         return False
     ctype = bot.normalize_mime(item.enclosure_type)
     if ctype.startswith("image/"):
         return False
-    return ctype == "application/pdf" or _is_pdf_url(url)
+    return ctype == "application/pdf" or _is_attachable_pdf_url(url)
 
 
 def _has_valid_photo(item: bot.FeedItem) -> bool:
     url = item.enclosure_url or ""
-    if not url or not _is_media_cdn_url(url):
+    if not url:
         return False
     ctype = bot.normalize_mime(item.enclosure_type)
-    if ctype.startswith("image/"):
+    if ctype.startswith("image/") and _is_attachable_image_url(url):
         return True
-    guessed = mimetypes.guess_type(url)[0] or ""
-    if guessed.startswith("image/"):
-        return True
-    if _is_pdf_url(url):
+    if _is_attachable_pdf_url(url):
         return False
-    return bot.looks_like_real_image(url)
+    return _is_attachable_image_url(url)
 
 
 def send_pdf_item_with_image_fallback(
@@ -520,6 +568,33 @@ def _bind_select_items_newest_first() -> None:
     bot.MirrorBot.select_items = wrapped  # type: ignore[method-assign]
 
 
+def _strip_unwanted_web_links(text: str, wp_link: str) -> str:
+    """Keep positronacademy.in only when our WordPress page actually exists; drop every other URL."""
+    allowed = _allowed_site_url(wp_link)
+
+    def replace(match: re.Match[str]) -> str:
+        url = bot.clean_url(match.group(0))
+        if allowed and _is_own_site_url(url):
+            return url
+        return ""
+
+    cleaned = bot.URL_RE.sub(replace, text or "")
+    kept: list[str] = []
+    for raw_line in cleaned.splitlines():
+        line = bot.normalize_whitespace(raw_line)
+        lower = line.lower()
+        if any(lower.startswith(prefix) for prefix in LINK_LINE_PREFIXES):
+            if allowed and "positronacademy.in" in lower:
+                kept.append(line)
+            continue
+        if not line:
+            if kept and kept[-1] != "":
+                kept.append("")
+            continue
+        kept.append(line)
+    return bot.normalize_whitespace("\n".join(kept))
+
+
 def build_caption_with_handle_replace(
     title: str,
     content_text: str,
@@ -531,18 +606,55 @@ def build_caption_with_handle_replace(
     limit: int,
     enclosure_url: str = "",
 ) -> str:
+    safe_wp = _allowed_site_url(wp_link)
     caption = _original_build_caption(
         title,
         content_text,
         fallback_text,
-        wp_link,
-        source_url,
-        important_links,
+        safe_wp,
+        "",
+        [],
         config,
         limit,
         enclosure_url,
     )
-    return _replace_telegram_mentions(caption)
+    caption = _replace_telegram_mentions(caption)
+    return _strip_unwanted_web_links(caption, safe_wp)
+
+
+def dispatch_telegram_clean(
+    self: bot.MirrorBot,
+    item: bot.FeedItem,
+    wp_link: str,
+    important_links: list[bot.LinkInfo],
+    caption_source_url: str,
+) -> None:
+    safe_wp = _allowed_site_url(wp_link)
+    run_bot.dispatch_telegram(self, item, safe_wp, [], "")
+    extra_pdfs = [url for url in getattr(item, "extra_pdf_urls", []) or [] if url and url != item.enclosure_url]
+    if not extra_pdfs:
+        return
+    primary_url = item.enclosure_url
+    primary_type = item.enclosure_type
+    caption = build_caption_with_handle_replace(
+        item.title,
+        item.text,
+        item.text,
+        safe_wp,
+        "",
+        [],
+        self.config,
+        900,
+        extra_pdfs[0],
+    )
+    try:
+        for pdf_url in extra_pdfs:
+            item.enclosure_url = pdf_url
+            item.enclosure_type = "application/pdf"
+            self.send_pdf_item(item, caption, caption)
+    finally:
+        item.enclosure_url = primary_url
+        item.enclosure_type = primary_type
 
 
 def patch_mirror_bot() -> None:
@@ -550,6 +662,7 @@ def patch_mirror_bot() -> None:
     run_bot.build_caption = build_caption_with_handle_replace
     bot.build_caption = build_caption_with_handle_replace
     bot.MirrorBot.send_pdf_item = send_pdf_item_with_image_fallback
+    bot.MirrorBot.dispatch_telegram = dispatch_telegram_clean
     bot.MirrorBot.process_one = process_mirror_item
     bot.MirrorBot.catchup_wordpress_links = catchup_mirror_targets_only
 
