@@ -1618,6 +1618,52 @@ def parse_feed(xml_data: str, feed_url: str) -> list[FeedItem]:
     return items
 
 
+def parse_telegram_preview(html_data: str, page_url: str) -> list[FeedItem]:
+    soup = make_soup(html_data, "html.parser")
+    wraps = soup.select(".tgme_widget_message")
+    items: list[FeedItem] = []
+    for wrap in reversed(wraps):
+        post = (wrap.get("data-post") or "").strip()
+        if not post:
+            continue
+        source_url = f"https://t.me/{post}"
+        text_el = wrap.select_one(".tgme_widget_message_text")
+        html_content = str(text_el) if text_el else ""
+        text = text_el.get_text("\n", strip=True) if text_el else ""
+        title = remove_prefixes(strip_tags(text.split("\n", 1)[0] if text else "Educational Update"))[:180]
+        enclosure_url = ""
+        enclosure_type = ""
+        photo = wrap.select_one(".tgme_widget_message_photo_wrap")
+        if photo is not None:
+            style = photo.get("style") or ""
+            match = re.search(r"url\(['\"]?(https?://[^'\")]+)['\"]?\)", style)
+            if match:
+                enclosure_url = match.group(1)
+                enclosure_type = "image/jpeg"
+        if not text and not enclosure_url:
+            continue
+        content_hash = sha256_text("|".join([title, text, html_content, source_url, enclosure_url]))
+        items.append(
+            FeedItem(
+                guid=source_url,
+                title=title or "Educational Update",
+                text=text or title,
+                html_content=html_content,
+                source_url=source_url,
+                enclosure_url=enclosure_url,
+                enclosure_type=enclosure_type,
+                content_hash=content_hash,
+            )
+        )
+    return items
+
+
+def parse_feed_or_preview(raw: str, feed_url: str) -> list[FeedItem]:
+    if "tgme_widget_message" in raw:
+        return parse_telegram_preview(raw, feed_url)
+    return parse_feed(raw, feed_url)
+
+
 def extract_feed_link(node: Any, feed_url: str) -> str:
     link_node = node.find("link")
     if not link_node:
@@ -1917,7 +1963,7 @@ class MirrorBot:
                 urls.append(url)
         return urls
 
-    def fetch_feed(self) -> str:
+    def load_feed(self) -> tuple[list[FeedItem], str]:
         last_error: Exception | None = None
         for url in self.feed_urls():
             LOGGER.info("Fetching feed: %s", url)
@@ -1938,15 +1984,19 @@ class MirrorBot:
                     body = (exc.response.text or "")[:300]
                 LOGGER.warning("Feed %s failed: %s %s", url, exc, body)
                 last_error = exc
-                if exc.response is not None and exc.response.status_code in {403, 404}:
-                    continue
-                raise
+                continue
             text = response.text or ""
-            if "CHANNEL_PRIVATE" in text and "<item" not in text.lower() and "<entry" not in text.lower():
+            if "CHANNEL_PRIVATE" in text and "<item" not in text.lower() and "<entry" not in text.lower() and "tgme_widget_message" not in text:
                 LOGGER.warning("Feed %s reported CHANNEL_PRIVATE; trying next source", url)
                 last_error = RuntimeError(f"CHANNEL_PRIVATE for {url}")
                 continue
-            return text
+            items = parse_feed_or_preview(text, url)
+            if not items:
+                LOGGER.warning("Feed %s returned 0 items; trying next source", url)
+                last_error = RuntimeError(f"Empty feed: {url}")
+                continue
+            LOGGER.info("Parsed %s feed item(s) from %s", len(items), url)
+            return items, url
         raise last_error or RuntimeError("All feed URLs failed")
 
     def run(self) -> None:
@@ -1958,9 +2008,8 @@ class MirrorBot:
             self.config.wp_post_type,
             self.config.skip_wordpress,
         )
-        xml_data = self.fetch_feed()
-        items = parse_feed(xml_data, self.config.feed_url)
-        LOGGER.info("Parsed %s feed item(s).", len(items))
+        items, source_url = self.load_feed()
+        LOGGER.info("Parsed %s feed item(s) from %s.", len(items), source_url)
 
         if parse_bool(os.environ.get("WP_CATCHUP_ONLY"), False):
             self.catchup_wordpress_links(items)
