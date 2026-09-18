@@ -1169,15 +1169,29 @@ class WordPressClient:
     def available(self) -> bool:
         return self.ready and not self.disabled and not self.config.skip_wordpress
 
-    def mark_unreachable(self, reason: str) -> None:
+    def disable(self, reason: str, hint: str = "") -> None:
         self.disabled = True
         self.disabled_reason = reason
         LOGGER.error("%s", reason)
-        LOGGER.error(
+        if hint:
+            LOGGER.error("%s", hint)
+
+    def mark_unreachable(self, reason: str) -> None:
+        self.disable(
+            reason,
             "WordPress host is dropping this runner (TCP connect timeout). "
             "positronacademy.in is on webhostbox/HostGator — Imunify360 or cPanel IP Blocker "
             "usually blacklists GitHub Actions. Whitelist this runner IP, then re-run. "
-            "Telegram will continue without positronacademy.in pages."
+            "Telegram will continue without positronacademy.in pages.",
+        )
+
+    def mark_auth_failed(self, reason: str) -> None:
+        self.disable(
+            reason,
+            "GitHub secrets WP_USER / WP_PASS cannot create pages. "
+            "WordPress Admin → Users → Profile → Application Passwords: Administrator account se naya app password banao, "
+            "WP_USER = username (email nahi), WP_PASS = application password. "
+            "User role Administrator/Editor honi chahiye with publish_pages.",
         )
 
     def api_root(self) -> str:
@@ -1226,17 +1240,24 @@ class WordPressClient:
             return False
         try:
             response = self.session.get(
-                f"{self.api_root()}/{self.config.wp_post_type}?per_page=1",
+                f"{self.api_root()}/users/me",
                 auth=(self.config.wp_user, self.config.wp_pass),
                 headers=self.api_headers(),
                 timeout=self.request_timeout(),
                 verify=self.config.verify_ssl,
             )
-            LOGGER.info("WordPress API probe: HTTP %s", response.status_code)
-            if response.status_code in {401, 403, 406}:
-                LOGGER.warning(
-                    "WordPress answered HTTP %s — credentials or ModSecurity, not a dead connection.",
-                    response.status_code,
+            LOGGER.info("WordPress auth probe /users/me: HTTP %s", response.status_code)
+            if response.status_code in {401, 403}:
+                self.mark_auth_failed(
+                    f"WordPress login failed HTTP {response.status_code}: {(response.text or '')[:200]}"
+                )
+                return False
+            if response.status_code == 200:
+                payload = response.json() if response.content else {}
+                LOGGER.info(
+                    "WordPress auth OK as %s (roles=%s)",
+                    payload.get("slug") or payload.get("name") or "unknown",
+                    payload.get("roles") or [],
                 )
             return True
         except Exception as exc:
@@ -1284,6 +1305,9 @@ class WordPressClient:
                 if response.status_code in (200, 201):
                     return response.json()
                 last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+                if response.status_code in {401, 403}:
+                    self.mark_auth_failed(last_error)
+                    break
                 if response.status_code not in {429, 500, 502, 503, 504}:
                     break
             except Exception as exc:
@@ -2199,9 +2223,8 @@ class MirrorBot:
                         self.telegram.send_text(
                             self.config.admin_chat_id,
                             (
-                                "⚠️ positronacademy.in WordPress unreachable from GitHub Actions.\n"
-                                f"{self.wordpress.disabled_reason}\n"
-                                "cPanel → Imunify360 / IP Blocker mein GitHub runner IP whitelist karo."
+                                "⚠️ positronacademy.in WordPress pages nahi ban paye.\n"
+                                f"{self.wordpress.disabled_reason}"
                             )[:3900],
                             disable_preview=True,
                         )

@@ -90,11 +90,6 @@ def main() -> int:
             client = bot.WordPressClient(config, session)
             if not client.probe():
                 print(f"WordPress FAIL: {client.disabled_reason}")
-                print(
-                    "HostGator/webhostbox (ns1.cp-21.webhostbox.net) is dropping this GitHub IP. "
-                    "cPanel → Security → Imunify360 (or IP Blocker) mein upar wala Runner IP whitelist karo, "
-                    "phir Actions se page banenge."
-                )
             else:
                 print("WordPress TCP/API probe: OK")
         except Exception as exc:
