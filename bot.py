@@ -11,6 +11,7 @@ import re
 import socket
 import sqlite3
 import time
+import xmlrpc.client
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -1160,6 +1161,7 @@ class WordPressClient:
         self.media_upload_available = config.wp_upload_media
         self.disabled = False
         self.disabled_reason = ""
+        self.use_xmlrpc = False
 
     @property
     def ready(self) -> bool:
@@ -1251,13 +1253,14 @@ class WordPressClient:
             body = (response.text or "")[:200]
             LOGGER.info("WordPress auth probe %s?context=edit: HTTP %s %s", self.config.wp_post_type, response.status_code, body)
             if response.status_code in {200, 201}:
-                LOGGER.info("WordPress auth OK; %s edit access confirmed.", self.config.wp_post_type)
+                LOGGER.info("WordPress REST auth OK; %s edit access confirmed.", self.config.wp_post_type)
                 return True
             if response.status_code in {401, 403}:
-                self.mark_auth_failed(
-                    f"WordPress login/permission failed HTTP {response.status_code}: {body}"
+                LOGGER.warning(
+                    "WordPress REST auth failed HTTP %s (host often strips Authorization). Trying XML-RPC.",
+                    response.status_code,
                 )
-                return False
+                return self.probe_xmlrpc()
             LOGGER.warning("WordPress auth probe unexpected HTTP %s; will still try to publish.", response.status_code)
             return True
         except Exception as exc:
@@ -1267,6 +1270,80 @@ class WordPressClient:
                 return False
             LOGGER.warning("WordPress API probe error (will still try to publish): %s", exc)
             return True
+
+    def xmlrpc_url(self) -> str:
+        return urljoin(self.config.wp_url.rstrip("/") + "/", "xmlrpc.php")
+
+    def xmlrpc_call(self, method: str, params: tuple[Any, ...]) -> Any:
+        payload = xmlrpc.client.dumps(params, methodname=method, allow_none=False)
+        response = self.session.post(
+            self.xmlrpc_url(),
+            data=payload.encode("utf-8"),
+            headers={
+                "Content-Type": "text/xml; charset=utf-8",
+                "User-Agent": default_headers()["User-Agent"],
+            },
+            timeout=self.request_timeout(),
+            verify=self.config.verify_ssl,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"XML-RPC HTTP {response.status_code}: {(response.text or '')[:200]}")
+        result, _ctype = xmlrpc.client.loads(response.content, use_builtin_types=True)
+        return result[0] if result else None
+
+    def probe_xmlrpc(self) -> bool:
+        try:
+            blogs = self.xmlrpc_call(
+                "wp.getUsersBlogs",
+                (self.config.wp_user, self.config.wp_pass),
+            )
+            name = ""
+            if isinstance(blogs, list) and blogs:
+                first = blogs[0] if isinstance(blogs[0], dict) else {}
+                name = str(first.get("blogName") or first.get("url") or "")
+            self.use_xmlrpc = True
+            LOGGER.info("WordPress XML-RPC auth OK%s.", f" ({name})" if name else "")
+            return True
+        except xmlrpc.client.Fault as exc:
+            self.mark_auth_failed(f"WordPress XML-RPC login failed: {exc.faultString}")
+            return False
+        except Exception as exc:
+            if is_connect_error(exc):
+                self.mark_unreachable(f"WordPress XML-RPC connect failed: {exc}")
+                return False
+            self.mark_auth_failed(f"WordPress XML-RPC login failed: {exc}")
+            return False
+
+    def publish_xmlrpc(self, title: str, content_html: str, slug: str) -> str:
+        post_id = self.xmlrpc_call(
+            "wp.newPost",
+            (
+                0,
+                self.config.wp_user,
+                self.config.wp_pass,
+                {
+                    "post_type": "page" if self.config.wp_post_type == "pages" else "post",
+                    "post_status": "publish",
+                    "post_title": title[:180],
+                    "post_content": content_html,
+                    "post_name": slug,
+                },
+            ),
+        )
+        link = ""
+        try:
+            post = self.xmlrpc_call(
+                "wp.getPost",
+                (0, self.config.wp_user, self.config.wp_pass, int(post_id), ["link"]),
+            )
+            if isinstance(post, dict):
+                link = str(post.get("link") or "")
+        except Exception as exc:
+            LOGGER.warning("XML-RPC getPost failed after create: %s", exc)
+        if not link:
+            link = urljoin(self.config.wp_url.rstrip("/") + "/", f"{slug}/")
+        LOGGER.info("WordPress XML-RPC published %s -> %s", self.config.wp_post_type[:-1], link)
+        return link
 
     def api_headers(self, headers: dict[str, str] | None = None) -> dict[str, str]:
         final_headers = {
@@ -1465,14 +1542,26 @@ class WordPressClient:
             "slug": f"update-{int(time.time() * 1000)}",
         }
         LOGGER.info("Publishing WordPress %s: %s", self.config.wp_post_type[:-1], title[:80])
-        payload = self.request_json(
-            "POST",
-            self.endpoint(self.config.wp_post_type),
-            headers={"Content-Type": "application/json"},
-            json=data,
-            timeout=self.config.wp_timeout,
-        )
-        return payload.get("link", "")
+        if self.use_xmlrpc:
+            return self.publish_xmlrpc(data["title"], final_content, data["slug"])
+        try:
+            payload = self.request_json(
+                "POST",
+                self.endpoint(self.config.wp_post_type),
+                headers={"Content-Type": "application/json"},
+                json=data,
+                timeout=self.config.wp_timeout,
+            )
+            return payload.get("link", "")
+        except RuntimeError as exc:
+            err = str(exc)
+            if self.disabled and any(token in err.lower() for token in ("rest_not_logged_in", "rest_cannot_create", "rest_forbidden_context", "401")):
+                LOGGER.warning("REST publish got auth error; retrying via XML-RPC.")
+                self.disabled = False
+                self.disabled_reason = ""
+                if self.probe_xmlrpc():
+                    return self.publish_xmlrpc(data["title"], final_content, data["slug"])
+            raise
 
 
 class AIRewriter:
