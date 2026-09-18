@@ -934,16 +934,35 @@ def source_block(source_url: str) -> str:
 
 def select_article(soup: Any) -> Any:
     candidates = [
+        soup.find(class_=re.compile(r"entry-content|td-post-content|post-content|post-body|article-content", re.I)),
         soup.find("article"),
-        soup.find(class_=re.compile(r"entry-content|post-content|post-body|content-area|article-content", re.I)),
+        soup.find(class_=re.compile(r"content-area", re.I)),
         soup.find(id=re.compile(r"post|article|content", re.I)),
         soup.find("main"),
         soup.find("body"),
     ]
     for candidate in candidates:
+        if candidate and len(strip_tags(str(candidate))) >= 80:
+            return candidate
+    for candidate in candidates:
         if candidate:
             return candidate
     return None
+
+
+def title_from_source_html(source_html: str, fallback: str = "") -> str:
+    soup = make_soup(source_html or "", "html.parser")
+    texts: list[str] = []
+    for tag in soup.find_all(["h1", "h2"]):
+        texts.append(normalize_whitespace(tag.get_text(" ", strip=True)))
+    for candidate in texts:
+        clean = re.sub(r"\s*[-|–]\s*Rajasthan Vacancy\s*$", "", candidate, flags=re.I).strip()
+        if len(clean) >= 8 and any(ch.isalpha() for ch in clean):
+            return clean[:180]
+    fallback = normalize_whitespace(fallback)
+    if len(fallback) >= 8 and any(ch.isalpha() for ch in fallback) and "educational update" not in fallback.lower():
+        return fallback[:180]
+    return ""
 
 
 def clean_layout_noise(soup: Any) -> None:
@@ -1054,6 +1073,24 @@ class StateStore:
             FROM items
             WHERE status = 'published' AND COALESCE(wp_link, '') = ''
             ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def list_empty_mirror_pages(self, limit: int = 12) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT guid, title, source_url, wp_link
+            FROM items
+            WHERE status = 'published'
+              AND wp_link LIKE '%positronacademy.in/%'
+              AND (
+                title LIKE '%Educational Update%'
+                OR title LIKE '%🔥%'
+                OR LENGTH(TRIM(COALESCE(title, ''))) < 8
+              )
+            ORDER BY updated_at DESC
             LIMIT ?
             """,
             (limit,),
@@ -1314,6 +1351,44 @@ class WordPressClient:
             self.mark_auth_failed(f"WordPress XML-RPC login failed: {exc}")
             return False
 
+    def page_id_from_url(self, page_url: str) -> int:
+        slug = urlparse(page_url or "").path.strip("/").rstrip("/").split("/")[-1]
+        if not slug:
+            return 0
+        try:
+            response = self.session.get(
+                self.endpoint(self.config.wp_post_type),
+                params={"slug": slug},
+                timeout=self.request_timeout(),
+                verify=self.config.verify_ssl,
+            )
+            if response.status_code != 200:
+                return 0
+            payload = response.json()
+            if isinstance(payload, list) and payload:
+                return int(payload[0].get("id") or 0)
+        except Exception as exc:
+            LOGGER.warning("Could not resolve WordPress id for %s: %s", page_url, exc)
+        return 0
+
+    def edit_xmlrpc(self, post_id: int, title: str, content_html: str, page_url: str) -> str:
+        self.xmlrpc_call(
+            "wp.editPost",
+            (
+                0,
+                self.config.wp_user,
+                self.config.wp_pass,
+                int(post_id),
+                {
+                    "post_title": title[:180],
+                    "post_content": content_html,
+                    "post_status": "publish",
+                },
+            ),
+        )
+        LOGGER.info("WordPress XML-RPC updated page %s -> %s", post_id, page_url)
+        return page_url
+
     def publish_xmlrpc(self, title: str, content_html: str, slug: str) -> str:
         post_id = self.xmlrpc_call(
             "wp.newPost",
@@ -1520,7 +1595,7 @@ class WordPressClient:
                 if attr.startswith("data-") or attr in {"srcset", "sizes"}:
                     del img[attr]
 
-    def publish(self, title: str, content_html: str, base_url: str = "") -> str:
+    def publish(self, title: str, content_html: str, base_url: str = "", existing_url: str = "") -> str:
         if self.disabled:
             LOGGER.info("WordPress unreachable this run; skipping publish.")
             return ""
@@ -1542,6 +1617,10 @@ class WordPressClient:
             "slug": f"update-{int(time.time() * 1000)}",
         }
         LOGGER.info("Publishing WordPress %s: %s", self.config.wp_post_type[:-1], title[:80])
+        if existing_url:
+            page_id = self.page_id_from_url(existing_url)
+            if page_id and (self.use_xmlrpc or self.probe_xmlrpc()):
+                return self.edit_xmlrpc(page_id, data["title"], final_content, existing_url)
         if self.use_xmlrpc:
             return self.publish_xmlrpc(data["title"], final_content, data["slug"])
         try:
@@ -2558,8 +2637,6 @@ class MirrorBot:
         if not self.wordpress.available:
             LOGGER.warning("WordPress unavailable; skipping source-page creation.")
             return {}
-        if existing_wp_link and len(source_urls) == 1:
-            return {canonical_url(source_urls[0]): existing_wp_link}
 
         replacements: dict[str, str] = {}
         for source_url in source_urls:
@@ -2567,11 +2644,19 @@ class MirrorBot:
                 LOGGER.warning("Stopping source-page creation to stay inside MAX_RUN_SECONDS=%s.", self.config.max_run_seconds)
                 break
             LOGGER.info("Creating transparent source page for %s", source_url)
-            if canonical_url(source_url) == canonical_url(item.source_url):
+            source_html = ""
+            page_links: list[LinkInfo] = []
+            if canonical_url(source_url) == canonical_url(item.source_url or "") and len(strip_tags(initial_source_html or "")) >= 120:
                 source_html = initial_source_html
                 page_links = initial_page_links or []
-            else:
-                source_html, page_links = self.fetch_source_context(source_url)
+            if len(strip_tags(source_html)) < 120:
+                fetched_html, fetched_links = self.fetch_source_context(source_url)
+                if len(strip_tags(fetched_html)) >= len(strip_tags(source_html)):
+                    source_html, page_links = fetched_html, fetched_links
+            if len(strip_tags(source_html)) < 80:
+                LOGGER.warning("Source page had no article body to mirror: %s", source_url)
+                continue
+            page_title = title_from_source_html(source_html, item.title)
             important_links = dedupe_links(
                 [
                     *extract_important_links(source_html, source_url),
@@ -2580,8 +2665,9 @@ class MirrorBot:
                 ],
                 limit=24,
             )
-            content = build_source_page_content(item.title, source_url, source_html, item.text, self.ai, important_links)
-            wp_link = self.wordpress.publish(item.title, content, source_url)
+            content = build_source_page_content(page_title or item.title, source_url, source_html, item.text, self.ai, important_links)
+            reuse_url = existing_wp_link if existing_wp_link and not replacements else ""
+            wp_link = self.wordpress.publish(page_title or item.title, content, source_url, existing_url=reuse_url)
             if not wp_link and not self.config.dry_run:
                 raise RuntimeError(f"WordPress did not return a link for source page: {source_url}")
             if wp_link:

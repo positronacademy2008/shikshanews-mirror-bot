@@ -629,6 +629,10 @@ def _remove_mirror_noise(soup_or_tag) -> None:
         "#comments",
         ".breadcrumb",
         ".ast-breadcrumbs-wrapper",
+        ".entry-meta",
+        ".cat-links",
+        ".post-navigation",
+        "#nav-below",
     ):
         for element in list(soup_or_tag.select(selector)):
             element.decompose()
@@ -882,9 +886,9 @@ def build_caption(
     return bot.trim_preserving_urls(minimal, limit)
 
 
-def publish(self, title: str, content_html: str, base_url: str = "") -> str:
+def publish(self, title: str, content_html: str, base_url: str = "", existing_url: str = "") -> str:
     clean = clean_title(title, base_url, bot.html_to_text_with_links(content_html, base_url))
-    return _original_publish(self, clean, content_html, base_url)
+    return _original_publish(self, clean, content_html, base_url, existing_url=existing_url)
 
 
 @dataclass(frozen=True)

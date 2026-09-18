@@ -398,7 +398,12 @@ def catchup_mirror_targets_only(self: bot.MirrorBot, feed_items: list[bot.FeedIt
         return
 
     by_guid = {item.guid: item for item in feed_items}
-    pending_rows = self.state.list_published_without_wp_link(limit=12)
+    pending_rows = list(self.state.list_published_without_wp_link(limit=8))
+    seen = {row["guid"] for row in pending_rows}
+    for row in self.state.list_empty_mirror_pages(limit=12):
+        if row["guid"] not in seen:
+            pending_rows.append(row)
+            seen.add(row["guid"])
     if not pending_rows:
         return
 
@@ -424,13 +429,17 @@ def catchup_mirror_targets_only(self: bot.MirrorBot, feed_items: list[bot.FeedIt
             LOGGER.warning("Stopping WordPress catch-up to stay inside MAX_RUN_SECONDS.")
             break
         source_page_html, page_links = "", []
-        if self.config.fetch_source_for_links and item.source_url:
-            source_page_html, page_links = self.fetch_source_context(item.source_url)
-        wp_link = self.publish_wordpress_for_item(
+        target_urls = self.source_page_urls_from_item(item)
+        fetch_url = target_urls[0] if target_urls else item.source_url
+        if fetch_url:
+            source_page_html, page_links = self.fetch_source_context(fetch_url)
+        replacements = self.create_source_pages(
             item,
-            source_page_html=source_page_html,
-            page_links=page_links,
+            existing_wp_link=row["wp_link"] or "",
+            initial_source_html=source_page_html,
+            initial_page_links=page_links,
         )
+        wp_link = next(iter(replacements.values()), "") if replacements else ""
         if wp_link:
             self.state.set_wp_link(row["guid"], wp_link)
             LOGGER.info("Catch-up published WordPress post: %s", wp_link)
@@ -473,8 +482,11 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
             return
 
         source_page_html, page_links = "", []
-        if has_targets and item.source_url and not bot.host_matches(item.source_url, self.config.source_page_hosts):
-            source_page_html, page_links = self.fetch_source_context(item.source_url)
+        if has_targets:
+            target_urls = self.source_page_urls_from_item(item)
+            fetch_url = target_urls[0] if target_urls else item.source_url
+            if fetch_url:
+                source_page_html, page_links = self.fetch_source_context(fetch_url)
 
         row = self.state.get(item.guid)
         wp_link = row["wp_link"] if row and row["wp_link"] else ""
