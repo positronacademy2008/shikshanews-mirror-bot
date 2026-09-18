@@ -81,7 +81,8 @@ jobs:
           MAX_RETRIES: "3"
           WP_POST_TYPE: pages
           WP_TIMEOUT: "45"
-          WP_MAX_RETRIES: "3"
+          WP_CONNECT_TIMEOUT: "8"
+          WP_MAX_RETRIES: "2"
           WP_SKIP_EXISTING: "true"
           WP_UPLOAD_MEDIA: "false"
           MAX_SOURCE_PAGES_PER_ITEM: "3"

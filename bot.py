@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import socket
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -214,6 +215,7 @@ class Config:
     follow_line_wa: str = ""
     wp_post_type: str = "pages"
     wp_timeout: int = 25
+    wp_connect_timeout: int = 8
     wp_max_retries: int = 2
     wp_referer: str = ""
     wp_upload_media: bool = False
@@ -264,6 +266,7 @@ class Config:
             follow_line_wa=os.environ.get("FOLLOW_LINE_WA", "").strip(),
             wp_post_type=post_type,
             wp_timeout=parse_int(os.environ.get("WP_TIMEOUT"), 25, minimum=5),
+            wp_connect_timeout=parse_int(os.environ.get("WP_CONNECT_TIMEOUT"), 8, minimum=3),
             wp_max_retries=parse_int(os.environ.get("WP_MAX_RETRIES"), 2, minimum=1),
             wp_referer=os.environ.get("WP_REFERER", "").strip(),
             wp_upload_media=parse_bool(os.environ.get("WP_UPLOAD_MEDIA"), False),
@@ -321,7 +324,7 @@ def build_session(config: Config) -> requests.Session:
 
     retry = Retry(
         total=1,
-        connect=1,
+        connect=0,
         read=1,
         backoff_factor=1,
         status_forcelist=(429, 500, 502, 503, 504),
@@ -333,6 +336,42 @@ def build_session(config: Config) -> requests.Session:
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
+
+
+def is_connect_error(exc: BaseException) -> bool:
+    if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError)):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        token in text
+        for token in (
+            "connecttimeout",
+            "connection to ",
+            "failed to establish a new connection",
+            "newconnectionerror",
+            "nameresolutionerror",
+        )
+    )
+
+
+def public_egress_ip(session: requests.Session, timeout: int = 8) -> str:
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            response = session.get(url, timeout=timeout)
+            ip = (response.text or "").strip()
+            if ip and " " not in ip and len(ip) < 48:
+                return ip
+        except Exception:
+            continue
+    return ""
+
+
+def tcp_connects(host: str, port: int, timeout: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 FLOOD_WAIT_RE = re.compile(r"FLOOD_WAIT_(\d+)", re.I)
@@ -1119,10 +1158,27 @@ class WordPressClient:
         self.session = session
         self.upload_cache: dict[str, str] = {}
         self.media_upload_available = config.wp_upload_media
+        self.disabled = False
+        self.disabled_reason = ""
 
     @property
     def ready(self) -> bool:
         return self.config.wordpress_ready
+
+    @property
+    def available(self) -> bool:
+        return self.ready and not self.disabled and not self.config.skip_wordpress
+
+    def mark_unreachable(self, reason: str) -> None:
+        self.disabled = True
+        self.disabled_reason = reason
+        LOGGER.error("%s", reason)
+        LOGGER.error(
+            "WordPress host is dropping this runner (TCP connect timeout). "
+            "positronacademy.in is on webhostbox/HostGator — Imunify360 or cPanel IP Blocker "
+            "usually blacklists GitHub Actions. Whitelist this runner IP, then re-run. "
+            "Telegram will continue without positronacademy.in pages."
+        )
 
     def api_root(self) -> str:
         clean = self.config.wp_url.rstrip("/")
@@ -1133,6 +1189,63 @@ class WordPressClient:
 
     def endpoint(self, resource: str) -> str:
         return f"{self.api_root()}/{resource.strip('/')}"
+
+    def request_timeout(self, timeout: Any | None = None) -> Any:
+        if not isinstance(timeout, (int, float, type(None))):
+            return timeout
+        read_timeout = int(timeout if timeout is not None else self.config.wp_timeout)
+        connect_timeout = min(self.config.wp_connect_timeout, read_timeout)
+        return (connect_timeout, read_timeout)
+
+    def probe(self) -> bool:
+        if self.disabled:
+            return False
+        if not self.ready or self.config.skip_wordpress:
+            return False
+        parsed = urlparse(self.config.wp_url)
+        host = parsed.hostname or ""
+        if not host:
+            self.mark_unreachable("WordPress URL is missing a hostname.")
+            return False
+        ip = public_egress_ip(self.session, timeout=min(8, self.config.wp_connect_timeout))
+        if ip:
+            LOGGER.info("Runner public IP: %s", ip)
+        https_ok = tcp_connects(host, 443, self.config.wp_connect_timeout)
+        http_ok = tcp_connects(host, 80, self.config.wp_connect_timeout)
+        LOGGER.info("WordPress TCP probe %s:443=%s :80=%s", host, https_ok, http_ok)
+        if not https_ok and http_ok and parsed.scheme == "https":
+            http_url = f"http://{host}"
+            LOGGER.warning("HTTPS to WordPress is blocked; retrying API over HTTP %s", http_url)
+            self.config.wp_url = http_url
+            https_ok = True
+        if not https_ok and not http_ok:
+            extra = f" Runner IP {ip}." if ip else ""
+            self.mark_unreachable(
+                f"Cannot TCP-connect to {host}:443 or :80 (timeout {self.config.wp_connect_timeout}s).{extra}"
+            )
+            return False
+        try:
+            response = self.session.get(
+                f"{self.api_root()}/{self.config.wp_post_type}?per_page=1",
+                auth=(self.config.wp_user, self.config.wp_pass),
+                headers=self.api_headers(),
+                timeout=self.request_timeout(),
+                verify=self.config.verify_ssl,
+            )
+            LOGGER.info("WordPress API probe: HTTP %s", response.status_code)
+            if response.status_code in {401, 403, 406}:
+                LOGGER.warning(
+                    "WordPress answered HTTP %s — credentials or ModSecurity, not a dead connection.",
+                    response.status_code,
+                )
+            return True
+        except Exception as exc:
+            if is_connect_error(exc):
+                extra = f" Runner IP {ip}." if ip else ""
+                self.mark_unreachable(f"WordPress API connect failed: {exc}.{extra}")
+                return False
+            LOGGER.warning("WordPress API probe error (will still try to publish): %s", exc)
+            return True
 
     def api_headers(self, headers: dict[str, str] | None = None) -> dict[str, str]:
         final_headers = {
@@ -1150,12 +1263,11 @@ class WordPressClient:
         return final_headers
 
     def request_json(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        if self.disabled:
+            raise RuntimeError(self.disabled_reason or "WordPress API disabled for this run")
         headers = self.api_headers(kwargs.pop("headers", {}))
         timeout = kwargs.pop("timeout", self.config.wp_timeout)
-        if isinstance(timeout, (int, float)):
-            request_timeout: Any = (min(25, int(timeout)), int(timeout))
-        else:
-            request_timeout = timeout
+        request_timeout = self.request_timeout(timeout)
         attempts = self.config.wp_max_retries
         last_error = ""
         for attempt in range(1, attempts + 1):
@@ -1176,8 +1288,15 @@ class WordPressClient:
                     break
             except Exception as exc:
                 last_error = str(exc)
+                if is_connect_error(exc):
+                    extra = ""
+                    ip = public_egress_ip(self.session, timeout=5)
+                    if ip:
+                        extra = f" Runner IP {ip}."
+                    self.mark_unreachable(f"WordPress API connect failed: {last_error}.{extra}")
+                    break
             LOGGER.warning("WordPress API attempt %s/%s failed: %s", attempt, attempts, last_error)
-            if attempt < attempts:
+            if attempt < attempts and not self.disabled:
                 time.sleep(min(2 ** attempt, 8))
         raise RuntimeError(f"WordPress API failed: {last_error}")
 
@@ -1301,6 +1420,9 @@ class WordPressClient:
                     del img[attr]
 
     def publish(self, title: str, content_html: str, base_url: str = "") -> str:
+        if self.disabled:
+            LOGGER.info("WordPress unreachable this run; skipping publish.")
+            return ""
         if not self.ready:
             LOGGER.info("WordPress credentials are not configured; skipping WordPress publish.")
             return ""
@@ -2067,6 +2189,24 @@ class MirrorBot:
             self.config.wp_post_type,
             self.config.skip_wordpress,
         )
+        if self.wordpress.ready and not self.config.skip_wordpress:
+            if not self.wordpress.probe():
+                LOGGER.warning(
+                    "WordPress pages will not be created this run. Telegram captions will omit website links."
+                )
+                if self.config.admin_chat_id:
+                    try:
+                        self.telegram.send_text(
+                            self.config.admin_chat_id,
+                            (
+                                "⚠️ positronacademy.in WordPress unreachable from GitHub Actions.\n"
+                                f"{self.wordpress.disabled_reason}\n"
+                                "cPanel → Imunify360 / IP Blocker mein GitHub runner IP whitelist karo."
+                            )[:3900],
+                            disable_preview=True,
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("Admin WordPress-down notice failed: %s", exc)
         items, source_url = self.load_feed()
         LOGGER.info("Parsed %s feed item(s) from %s.", len(items), source_url)
 
@@ -2074,7 +2214,7 @@ class MirrorBot:
             self.catchup_wordpress_links(items)
             return
 
-        if not self.config.skip_wordpress:
+        if self.wordpress.available:
             self.catchup_wordpress_links(items)
 
         selected = self.select_items(items)
@@ -2103,7 +2243,7 @@ class MirrorBot:
         source_page_html: str = "",
         page_links: list[LinkInfo] | None = None,
     ) -> str:
-        if not self.wordpress.ready or self.config.skip_wordpress:
+        if not self.wordpress.available:
             return ""
         if important_links is None:
             important_links = dedupe_links(
@@ -2125,7 +2265,7 @@ class MirrorBot:
             return ""
 
     def catchup_wordpress_links(self, feed_items: list[FeedItem]) -> None:
-        if self.config.skip_wordpress or not self.wordpress.ready:
+        if not self.wordpress.available:
             return
         if not parse_bool(os.environ.get("WP_CATCHUP"), True):
             return
@@ -2238,7 +2378,7 @@ class MirrorBot:
                 if wp_link:
                     self.state.set_wp_link(item.guid, wp_link)
 
-            if self.wordpress.ready and not self.config.skip_wordpress and not wp_link:
+            if self.wordpress.available and not wp_link:
                 wp_link = self.publish_wordpress_for_item(
                     item,
                     important_links=important_links,
@@ -2293,8 +2433,9 @@ class MirrorBot:
         source_urls = source_urls[: self.config.max_source_pages_per_item]
         if not source_urls:
             return {}
-        if not self.wordpress.ready:
-            raise RuntimeError("WordPress credentials are required to replace source-page links")
+        if not self.wordpress.available:
+            LOGGER.warning("WordPress unavailable; skipping source-page creation.")
+            return {}
         if existing_wp_link and len(source_urls) == 1:
             return {canonical_url(source_urls[0]): existing_wp_link}
 

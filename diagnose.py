@@ -81,28 +81,25 @@ def main() -> int:
             print(f"Feed WARN: {exc}")
             print("Bot may still run on the next retry window.")
 
+    ip = bot.public_egress_ip(session)
+    if ip:
+        print(f"Runner public IP: {ip}")
+
     if config.wordpress_ready and not config.skip_wordpress:
         try:
             client = bot.WordPressClient(config, session)
-            response = session.get(
-                f"{client.api_root()}/posts?per_page=1",
-                auth=(config.wp_user, config.wp_pass),
-                headers=client.api_headers(),
-                timeout=30,
-                verify=config.verify_ssl,
-            )
-            print(f"WordPress API: HTTP {response.status_code}")
-            if response.status_code in {406, 403}:
+            if not client.probe():
+                print(f"WordPress FAIL: {client.disabled_reason}")
                 print(
-                    "WordPress WARN: blocked from this network (ModSecurity/firewall). "
-                    "Run run_local.ps1 on your PC for website posts."
+                    "HostGator/webhostbox (ns1.cp-21.webhostbox.net) is dropping this GitHub IP. "
+                    "cPanel → Security → Imunify360 (or IP Blocker) mein upar wala Runner IP whitelist karo, "
+                    "phir Actions se page banenge."
                 )
-            elif response.status_code != 200:
-                print(f"WordPress FAIL: {response.text[:200]}")
-                ok = False
+            else:
+                print("WordPress TCP/API probe: OK")
         except Exception as exc:
             print(f"WordPress WARN: {exc}")
-            print("Run run_local.ps1 on your PC for website posts.")
+            print("cPanel Imunify360 / IP Blocker mein GitHub runner IP whitelist karo.")
 
     return 0 if ok else 2
 
