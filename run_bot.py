@@ -345,7 +345,9 @@ def _own_whatsapp_url() -> str:
     contact = re.sub(r"\D+", "", IMAGE_BRAND_CONTACT)
     if len(contact) == 10:
         contact = "91" + contact
-    return f"https://wa.me/{contact}" if contact else ""
+    if contact:
+        return f"https://wa.me/{contact}"
+    return "https://whatsapp.com/channel/0029VaZYv1G1noz4mprmxQ0q"
 
 
 def _is_whatsapp_href(href: str) -> bool:

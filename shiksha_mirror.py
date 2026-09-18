@@ -704,7 +704,7 @@ def main() -> None:
     os.environ.setdefault("FOLLOW_LINE_WA", "")
     os.environ.setdefault("TELEGRAM_HANDLE_REPLACE", "@KapilRJ06")
     os.environ.setdefault("OWN_TELEGRAM_URL", "https://t.me/KapilRJ06")
-    os.environ.setdefault("OWN_WHATSAPP_URL", "https://wa.me/918104894648")
+    os.environ.setdefault("OWN_WHATSAPP_URL", "https://whatsapp.com/channel/0029VaZYv1G1noz4mprmxQ0q")
     os.environ.setdefault("MAX_ITEMS_PER_RUN", "25")
     os.environ.setdefault("MAX_RUN_SECONDS", "1500")
     patch_mirror_bot()

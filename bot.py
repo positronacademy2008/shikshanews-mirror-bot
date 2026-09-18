@@ -1376,16 +1376,31 @@ class WordPressClient:
 
     def xmlrpc_call(self, method: str, params: tuple[Any, ...]) -> Any:
         payload = xmlrpc.client.dumps(params, methodname=method, allow_none=False)
-        response = self.session.post(
-            self.xmlrpc_url(),
-            data=payload.encode("utf-8"),
-            headers={
-                "Content-Type": "text/xml; charset=utf-8",
-                "User-Agent": default_headers()["User-Agent"],
-            },
-            timeout=self.request_timeout(),
-            verify=self.config.verify_ssl,
-        )
+        headers = {
+            "Content-Type": "text/xml; charset=utf-8",
+            "User-Agent": default_headers()["User-Agent"],
+            "Accept": "*/*",
+        }
+        url = self.xmlrpc_url()
+        response = None
+        for attempt in range(2):
+            response = self.session.post(
+                url,
+                data=payload.encode("utf-8"),
+                headers=headers,
+                timeout=self.request_timeout(),
+                verify=self.config.verify_ssl,
+            )
+            body = response.text or ""
+            if response.status_code == 409 and "humans_" in body and attempt == 0:
+                match = re.search(r'document\.cookie\s*=\s*"([^"=]+)=([^"]+)"', body)
+                if match:
+                    self.session.cookies.set(match.group(1), match.group(2).rstrip(";"))
+                    LOGGER.info("Retrying WordPress XML-RPC after anti-bot cookie.")
+                    continue
+            break
+        if response is None:
+            raise RuntimeError("XML-RPC request returned no response")
         if response.status_code >= 400:
             raise RuntimeError(f"XML-RPC HTTP {response.status_code}: {(response.text or '')[:200]}")
         result, _ctype = xmlrpc.client.loads(response.content, use_builtin_types=True)
