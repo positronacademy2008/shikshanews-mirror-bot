@@ -1854,6 +1854,16 @@ def parse_feed(xml_data: str, feed_url: str) -> list[FeedItem]:
     return items
 
 
+def title_from_telegram_text(text: str) -> str:
+    lines = [normalize_whitespace(line) for line in (text or "").splitlines()]
+    lines = [remove_prefixes(strip_tags(line)) for line in lines if line]
+    for line in lines:
+        letters = len(DEVANAGARI_RE.findall(line)) + len(LATIN_LETTER_RE.findall(line))
+        if letters >= 8:
+            return line[:180]
+    return (lines[0][:180] if lines else "") or "Educational Update"
+
+
 def parse_telegram_preview(html_data: str, page_url: str) -> list[FeedItem]:
     soup = make_soup(html_data, "html.parser")
     wraps = soup.select(".tgme_widget_message")
@@ -1866,7 +1876,7 @@ def parse_telegram_preview(html_data: str, page_url: str) -> list[FeedItem]:
         text_el = wrap.select_one(".tgme_widget_message_text")
         html_content = str(text_el) if text_el else ""
         text = text_el.get_text("\n", strip=True) if text_el else ""
-        title = remove_prefixes(strip_tags(text.split("\n", 1)[0] if text else "Educational Update"))[:180]
+        title = title_from_telegram_text(text)
         enclosure_url = ""
         enclosure_type = ""
         photo = wrap.select_one(".tgme_widget_message_photo_wrap")
