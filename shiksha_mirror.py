@@ -668,10 +668,10 @@ def patch_mirror_bot() -> None:
 
 
 def main() -> None:
-    os.environ.setdefault("FEED_URL", "https://tg.i-c-a.su/rss/ShikshaNewsRajasthan")
-    os.environ.setdefault("FEED_FALLBACK_URLS", "https://t.me/s/ShikshaNewsRajasthan")
+    os.environ.setdefault("FEED_URL", "https://t.me/s/rajasthanvacancy_in")
+    os.environ.setdefault("FEED_FALLBACK_URLS", "https://tg.i-c-a.su/rss/rajasthanvacancy_in")
     os.environ.setdefault("DEST_CHANNEL", "@testsourcechannelA")
-    os.environ.setdefault("SOURCE_PAGE_HOSTS", "indianaukrihelp.com")
+    os.environ.setdefault("SOURCE_PAGE_HOSTS", "rajasthanvacancy.in")
     os.environ.setdefault("MAX_SOURCE_PAGES_PER_ITEM", "3")
     os.environ.setdefault("PAGE_BUILD_MODE", "mirror")
     os.environ.setdefault("SKIP_WORDPRESS", "false")

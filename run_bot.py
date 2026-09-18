@@ -35,7 +35,7 @@ IMAGE_BRAND_ADDRESS_LATIN = os.environ.get(
 ACADEMY_WEBSITE = os.environ.get("ACADEMY_WEBSITE", "https://positronacademy.in").strip()
 PAGE_BUILD_MODE = os.environ.get("PAGE_BUILD_MODE", "digest").strip().lower()
 SOURCE_PAGE_HOSTS = tuple(
-    part.strip() for part in os.environ.get("SOURCE_PAGE_HOSTS", "indianaukrihelp.com").split(",") if part.strip()
+    part.strip() for part in os.environ.get("SOURCE_PAGE_HOSTS", "rajasthanvacancy.in").split(",") if part.strip()
 )
 
 MEDIA_URL_HINTS = (

@@ -74,7 +74,7 @@ SPAM_TEXT_HINTS = (
 HARD_SKIP_PHRASES: tuple[str, ...] = ()
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GROQ_FALLBACK_MODELS = ("openai/gpt-oss-20b",)
-DEFAULT_SOURCE_PAGE_HOSTS = ("indianaukrihelp.com",)
+DEFAULT_SOURCE_PAGE_HOSTS = ("rajasthanvacancy.in",)
 DEFAULT_PROTECTED_IMAGE_HOSTS = (
     "tg.i-c-a.su",
     "cdn4.cdn-telegram.org",
@@ -149,7 +149,7 @@ English letters are allowed only for official exam/board names and short forms (
 RECREATE the update in fresh wording — never copy source sentences verbatim.
 Keep every fact, date, number, fee, eligibility rule, deadline, exam name, and organisation name accurate.
 Do not invent or guess missing details.
-Never mention indianaukrihelp.com or other news-aggregator/blog links.
+Never mention rajasthanvacancy.in, indianaukrihelp.com, or other news-aggregator/blog links.
 Official government URLs and PDF links are added separately — do not paste random third-party links.
 Return plain text for Telegram or clean HTML for WordPress as requested."""
 
@@ -1384,7 +1384,7 @@ class AIRewriter:
             "<h1>हिंदी शीर्षक</h1>\n"
             '<section class="pa-summary"><h2>संक्षिप्त जानकारी</h2><ul><li>3-5 recreated Hindi bullet points</li></ul></section>\n'
             '<section class="pa-details"><h2>मुख्य विवरण</h2><p>2-4 short recreated Hindi paragraphs with facts</p></section>\n'
-            "Do not copy source sentences. Do not include <a> links or indianaukrihelp references.",
+            "Do not copy source sentences. Do not include <a> links or rajasthanvacancy.in / indianaukrihelp references.",
             is_html=True,
             recreate=True,
         )
