@@ -1239,26 +1239,26 @@ class WordPressClient:
             )
             return False
         try:
+            # /users/me is often blocked by Loginizer/security plugins even when
+            # page create works. Probe the same capability the bot needs.
             response = self.session.get(
-                f"{self.api_root()}/users/me",
+                f"{self.api_root()}/{self.config.wp_post_type}?context=edit&per_page=1",
                 auth=(self.config.wp_user, self.config.wp_pass),
                 headers=self.api_headers(),
                 timeout=self.request_timeout(),
                 verify=self.config.verify_ssl,
             )
-            LOGGER.info("WordPress auth probe /users/me: HTTP %s", response.status_code)
+            body = (response.text or "")[:200]
+            LOGGER.info("WordPress auth probe %s?context=edit: HTTP %s %s", self.config.wp_post_type, response.status_code, body)
+            if response.status_code in {200, 201}:
+                LOGGER.info("WordPress auth OK; %s edit access confirmed.", self.config.wp_post_type)
+                return True
             if response.status_code in {401, 403}:
                 self.mark_auth_failed(
-                    f"WordPress login failed HTTP {response.status_code}: {(response.text or '')[:200]}"
+                    f"WordPress login/permission failed HTTP {response.status_code}: {body}"
                 )
                 return False
-            if response.status_code == 200:
-                payload = response.json() if response.content else {}
-                LOGGER.info(
-                    "WordPress auth OK as %s (roles=%s)",
-                    payload.get("slug") or payload.get("name") or "unknown",
-                    payload.get("roles") or [],
-                )
+            LOGGER.warning("WordPress auth probe unexpected HTTP %s; will still try to publish.", response.status_code)
             return True
         except Exception as exc:
             if is_connect_error(exc):
