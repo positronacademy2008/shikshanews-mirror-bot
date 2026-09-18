@@ -21,6 +21,8 @@ except Exception:
 
 
 WEB_FOLLOW_LINE = os.environ.get("WEB_FOLLOW_LINE", "").strip()
+OWN_TELEGRAM_URL = os.environ.get("OWN_TELEGRAM_URL", "").strip()
+OWN_WHATSAPP_URL = os.environ.get("OWN_WHATSAPP_URL", "").strip()
 BRAND_IMAGES = os.environ.get("BRAND_IMAGES", "false").strip().lower() in {"1", "true", "yes", "on"}
 IMAGE_BRAND_NAME = os.environ.get("IMAGE_BRAND_NAME", "POSITRON ACADEMY").strip()
 IMAGE_BRAND_ADDRESS = os.environ.get(
@@ -330,7 +332,66 @@ def important_links_block(links: list[bot.LinkInfo]) -> str:
     return _build_official_links_block(_filter_official_links(links))
 
 
+def _own_telegram_url() -> str:
+    if OWN_TELEGRAM_URL:
+        return OWN_TELEGRAM_URL
+    handle = os.environ.get("TELEGRAM_HANDLE_REPLACE", "@KapilRJ06").strip() or "@KapilRJ06"
+    return "https://t.me/" + handle.lstrip("@")
+
+
+def _own_whatsapp_url() -> str:
+    if OWN_WHATSAPP_URL:
+        return OWN_WHATSAPP_URL
+    contact = re.sub(r"\D+", "", IMAGE_BRAND_CONTACT)
+    if len(contact) == 10:
+        contact = "91" + contact
+    return f"https://wa.me/{contact}" if contact else ""
+
+
+def _is_whatsapp_href(href: str) -> bool:
+    lower = (href or "").lower()
+    return "whatsapp.com" in lower or "wa.me/" in lower or lower.startswith("whatsapp:")
+
+
+def _is_telegram_href(href: str) -> bool:
+    lower = (href or "").lower()
+    return "t.me/" in lower or "telegram.me/" in lower or "telegram.org" in lower
+
+
+def _rewrite_social_channel_links(soup) -> None:
+    telegram_url = _own_telegram_url()
+    whatsapp_url = _own_whatsapp_url()
+    for link in list(soup.find_all("a", href=True)):
+        href = link.get("href") or ""
+        if _is_whatsapp_href(href) and whatsapp_url:
+            link["href"] = whatsapp_url
+        elif _is_telegram_href(href) and telegram_url:
+            link["href"] = telegram_url
+
+
+def _own_channel_block() -> str:
+    telegram_url = _own_telegram_url()
+    whatsapp_url = _own_whatsapp_url()
+    rows: list[str] = []
+    if telegram_url:
+        rows.append(
+            f'<p><strong>Telegram Channel:</strong> <a href="{html.escape(telegram_url, quote=True)}">'
+            f"{html.escape(telegram_url)}</a></p>"
+        )
+    if whatsapp_url:
+        rows.append(
+            f'<p><strong>WhatsApp Channel:</strong> <a href="{html.escape(whatsapp_url, quote=True)}">'
+            f"{html.escape(whatsapp_url)}</a></p>"
+        )
+    if not rows:
+        return ""
+    return '<section class="own-channels"><h2>Join Us</h2>' + "".join(rows) + "</section>"
+
+
 def source_block(source_url: str) -> str:
+    own = _own_channel_block()
+    if own:
+        return own
     if not WEB_FOLLOW_LINE:
         return ""
     return (
@@ -690,6 +751,7 @@ def _build_mirror_html(
     _remove_duplicate_title_blocks(soup, display_title)
     _remove_source_link_start_blocks(soup)
     _strip_blocked_source_urls_from_text(soup, source_url)
+    _rewrite_social_channel_links(soup)
 
     if image_url and not _blocked_source_url(image_url):
         has_image = bool(soup.find("img"))

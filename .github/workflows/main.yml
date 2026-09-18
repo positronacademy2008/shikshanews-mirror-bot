@@ -91,6 +91,8 @@ jobs:
           SOURCE_PAGE_HOSTS: rajasthanvacancy.in
           SKIP_MESSAGE_PHRASES: ""
           WEB_FOLLOW_LINE: ""
+          OWN_TELEGRAM_URL: https://t.me/KapilRJ06
+          OWN_WHATSAPP_URL: https://wa.me/918104894648
           BRAND_IMAGES: "false"
           IMAGE_BRAND_NAME: POSITRON ACADEMY
           IMAGE_BRAND_ADDRESS: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"

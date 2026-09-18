@@ -999,6 +999,15 @@ class StateStore:
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(items)")}
         if "retries" not in columns:
             self.conn.execute("ALTER TABLE items ADD COLUMN retries INTEGER NOT NULL DEFAULT 0")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS source_mirrors (
+                source_url TEXT PRIMARY KEY,
+                wp_link TEXT NOT NULL,
+                updated_at TEXT
+            )
+            """
+        )
         self.conn.commit()
 
     def close(self) -> None:
@@ -1095,6 +1104,60 @@ class StateStore:
             """,
             (limit,),
         ).fetchall()
+
+    def get_source_mirror(self, source_url: str) -> str:
+        key = canonical_url(source_url)
+        if not key:
+            return ""
+        row = self.conn.execute(
+            "SELECT wp_link FROM source_mirrors WHERE source_url = ?",
+            (key,),
+        ).fetchone()
+        return (row["wp_link"] if row else "") or ""
+
+    def set_source_mirror(self, source_url: str, wp_link: str) -> None:
+        key = canonical_url(source_url)
+        link = (wp_link or "").strip()
+        if not key or not link:
+            return
+        self.conn.execute(
+            """
+            INSERT INTO source_mirrors (source_url, wp_link, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source_url) DO UPDATE SET
+                wp_link = excluded.wp_link,
+                updated_at = excluded.updated_at
+            """,
+            (key, link, utc_now()),
+        )
+        self.conn.commit()
+
+    def get_source_mirror(self, source_url: str) -> str:
+        key = canonical_url(source_url)
+        if not key:
+            return ""
+        row = self.conn.execute(
+            "SELECT wp_link FROM source_mirrors WHERE source_url = ?",
+            (key,),
+        ).fetchone()
+        return (row["wp_link"] if row else "") or ""
+
+    def set_source_mirror(self, source_url: str, wp_link: str) -> None:
+        key = canonical_url(source_url)
+        link = (wp_link or "").strip()
+        if not key or not link:
+            return
+        self.conn.execute(
+            """
+            INSERT INTO source_mirrors (source_url, wp_link, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source_url) DO UPDATE SET
+                wp_link = excluded.wp_link,
+                updated_at = excluded.updated_at
+            """,
+            (key, link, utc_now()),
+        )
+        self.conn.commit()
 
 
 class TelegramClient:
@@ -2634,12 +2697,17 @@ class MirrorBot:
         source_urls = source_urls[: self.config.max_source_pages_per_item]
         if not source_urls:
             return {}
-        if not self.wordpress.available:
-            LOGGER.warning("WordPress unavailable; skipping source-page creation.")
-            return {}
 
         replacements: dict[str, str] = {}
         for source_url in source_urls:
+            mapped = self.state.get_source_mirror(source_url)
+            if mapped and not self.wordpress.available:
+                LOGGER.info("Reusing stored WordPress page for %s -> %s", source_url, mapped)
+                replacements[canonical_url(source_url)] = mapped
+                continue
+            if not self.wordpress.available:
+                LOGGER.warning("WordPress unavailable; skipping new source-page creation for %s", source_url)
+                continue
             if self.time_budget_exceeded(reserve_seconds=35):
                 LOGGER.warning("Stopping source-page creation to stay inside MAX_RUN_SECONDS=%s.", self.config.max_run_seconds)
                 break
@@ -2654,6 +2722,10 @@ class MirrorBot:
                 if len(strip_tags(fetched_html)) >= len(strip_tags(source_html)):
                     source_html, page_links = fetched_html, fetched_links
             if len(strip_tags(source_html)) < 80:
+                if mapped:
+                    replacements[canonical_url(source_url)] = mapped
+                    LOGGER.info("Source fetch empty; reusing stored page %s", mapped)
+                    continue
                 LOGGER.warning("Source page had no article body to mirror: %s", source_url)
                 continue
             page_title = title_from_source_html(source_html, item.title)
@@ -2666,12 +2738,15 @@ class MirrorBot:
                 limit=24,
             )
             content = build_source_page_content(page_title or item.title, source_url, source_html, item.text, self.ai, important_links)
-            reuse_url = existing_wp_link if existing_wp_link and not replacements else ""
+            reuse_url = mapped or (existing_wp_link if existing_wp_link and not replacements else "")
             wp_link = self.wordpress.publish(page_title or item.title, content, source_url, existing_url=reuse_url)
+            if not wp_link and mapped:
+                wp_link = mapped
             if not wp_link and not self.config.dry_run:
                 raise RuntimeError(f"WordPress did not return a link for source page: {source_url}")
             if wp_link:
                 replacements[canonical_url(source_url)] = wp_link
+                self.state.set_source_mirror(source_url, wp_link)
         return replacements
 
     def caption_source_url(self, source_url: str, source_replacements: dict[str, str]) -> str:

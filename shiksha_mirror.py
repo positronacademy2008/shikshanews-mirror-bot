@@ -493,26 +493,24 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
         source_replacements: dict[str, str] = {}
 
         if has_targets:
-            if not self.wordpress.available:
+            try:
+                source_replacements = self.create_source_pages(
+                    item,
+                    existing_wp_link=wp_link,
+                    initial_source_html=source_page_html,
+                    initial_page_links=page_links,
+                )
+            except Exception as wp_exc:
                 LOGGER.warning(
-                    "WordPress unavailable; Telegram caption will omit website links for %s",
-                    item.title[:80],
+                    "WordPress mirror failed; still sending to Telegram without website links. Error: %s",
+                    wp_exc,
                 )
                 source_replacements = {}
-            else:
-                try:
-                    source_replacements = self.create_source_pages(
-                        item,
-                        existing_wp_link=wp_link,
-                        initial_source_html=source_page_html,
-                        initial_page_links=page_links,
-                    )
-                except Exception as wp_exc:
-                    LOGGER.warning(
-                        "WordPress mirror failed; still sending to Telegram without website links. Error: %s",
-                        wp_exc,
-                    )
-                    source_replacements = {}
+            if not source_replacements:
+                for source_url in self.source_page_urls_from_item(item):
+                    mapped = self.state.get_source_mirror(source_url)
+                    if mapped:
+                        source_replacements[bot.canonical_url(source_url)] = mapped
             if source_replacements:
                 item.text = bot.apply_link_replacements_text(item.text, source_replacements)
                 item.html_content = bot.apply_link_replacements_html(
@@ -705,6 +703,8 @@ def main() -> None:
     os.environ.setdefault("FOLLOW_LINE_TG", "")
     os.environ.setdefault("FOLLOW_LINE_WA", "")
     os.environ.setdefault("TELEGRAM_HANDLE_REPLACE", "@KapilRJ06")
+    os.environ.setdefault("OWN_TELEGRAM_URL", "https://t.me/KapilRJ06")
+    os.environ.setdefault("OWN_WHATSAPP_URL", "https://wa.me/918104894648")
     os.environ.setdefault("MAX_ITEMS_PER_RUN", "25")
     os.environ.setdefault("MAX_RUN_SECONDS", "1500")
     patch_mirror_bot()
