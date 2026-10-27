@@ -15,7 +15,7 @@ import xmlrpc.client
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -195,6 +195,32 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 
 
+def wordpress_url_from_login_link(login_link: str) -> str:
+    """Extract the WordPress site URL from the plugin-generated login link."""
+    if not login_link:
+        return ""
+    parsed = urlparse(login_link.strip())
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        return ""
+    # The plugin generates /wp-json/shikshanews-bot/v1/login?token=...
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+def wordpress_token_from_login_link(login_link: str) -> str:
+    """Extract the token from the plugin-generated login link without logging it."""
+    if not login_link:
+        return ""
+    parsed = urlparse(login_link.strip())
+    query = parse_qs(parsed.query)
+    token = (query.get("token") or [""])[0].strip()
+    # Only accept the expected plugin URL shape, not an arbitrary URL/query.
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        return ""
+    if "/wp-json/shikshanews-bot/v1/login" not in parsed.path:
+        return ""
+    return token
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
@@ -202,8 +228,8 @@ class Config:
     feed_url: str
     feed_fallback_urls: tuple[str, ...] = ()
     wp_url: str = ""
-    wp_user: str = ""
-    wp_pass: str = ""
+    wp_login_link: str = ""
+    wp_token: str = ""
     groq_api_key: str = ""
     admin_chat_id: str = ""
     db_file: str = "bot_state.sqlite3"
@@ -252,9 +278,9 @@ class Config:
             dest_channels=channels,
             feed_url=os.environ["FEED_URL"].strip(),
             feed_fallback_urls=parse_csv_tuple(os.environ.get("FEED_FALLBACK_URLS"), ()),
-            wp_url=os.environ.get("WP_URL", "").strip(),
-            wp_user=os.environ.get("WP_USER", "").strip(),
-            wp_pass=os.environ.get("WP_PASS", "").strip(),
+            wp_login_link=os.environ.get("WP_LOGIN_LINK", "").strip(),
+            wp_url=wordpress_url_from_login_link(os.environ.get("WP_LOGIN_LINK", "").strip()),
+            wp_token=wordpress_token_from_login_link(os.environ.get("WP_LOGIN_LINK", "").strip()),
             groq_api_key=os.environ.get("GROQ_API_KEY", "").strip(),
             admin_chat_id=os.environ.get("ADMIN_CHAT_ID", "").strip(),
             db_file=os.environ.get("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3",
@@ -297,7 +323,7 @@ class Config:
 
     @property
     def wordpress_ready(self) -> bool:
-        return bool(self.wp_url and self.wp_user and self.wp_pass)
+        return bool(self.wp_url and self.wp_token)
 
 
 @dataclass
@@ -1290,10 +1316,9 @@ class WordPressClient:
     def mark_auth_failed(self, reason: str) -> None:
         self.disable(
             reason,
-            "GitHub secrets WP_USER / WP_PASS cannot create pages. "
-            "WordPress Admin → Users → Profile → Application Passwords: Administrator account se naya app password banao, "
-            "WP_USER = username (email nahi), WP_PASS = application password. "
-            "User role Administrator/Editor honi chahiye with publish_pages.",
+            "WP_LOGIN_LINK authentication failed. WordPress mein ShikshaNews Bot Auth plugin active ho, "
+            "GitHub secret WP_LOGIN_LINK mein plugin se generate kiya hua poora login link paste karein. "
+            "Token ko revoke karke naya link generate karein agar woh expose ho gaya ho.",
         )
 
     def api_root(self) -> str:
@@ -1330,10 +1355,11 @@ class WordPressClient:
         http_ok = tcp_connects(host, 80, self.config.wp_connect_timeout)
         LOGGER.info("WordPress TCP probe %s:443=%s :80=%s", host, https_ok, http_ok)
         if not https_ok and http_ok and parsed.scheme == "https":
-            http_url = f"http://{host}"
-            LOGGER.warning("HTTPS to WordPress is blocked; retrying API over HTTP %s", http_url)
-            self.config.wp_url = http_url
-            https_ok = True
+            self.mark_unreachable(
+                f"HTTPS to {host}:443 is unavailable. WP_LOGIN_LINK authentication requires HTTPS; "
+                "fix the site's TLS certificate or hosting firewall rather than downgrading to HTTP."
+            )
+            return False
         if not https_ok and not http_ok:
             extra = f" Runner IP {ip}." if ip else ""
             self.mark_unreachable(
@@ -1345,7 +1371,6 @@ class WordPressClient:
             # page create works. Probe the same capability the bot needs.
             response = self.session.get(
                 f"{self.api_root()}/{self.config.wp_post_type}?context=edit&per_page=1",
-                auth=(self.config.wp_user, self.config.wp_pass),
                 headers=self.api_headers(),
                 timeout=self.request_timeout(),
                 verify=self.config.verify_ssl,
@@ -1357,10 +1382,10 @@ class WordPressClient:
                 return True
             if response.status_code in {401, 403}:
                 LOGGER.warning(
-                    "WordPress REST auth failed HTTP %s (host often strips Authorization). Trying XML-RPC.",
+                    "WordPress REST bearer-token auth failed HTTP %s. Check the plugin and WP_LOGIN_LINK secret.",
                     response.status_code,
                 )
-                return self.probe_xmlrpc()
+                return False
             LOGGER.warning("WordPress auth probe unexpected HTTP %s; will still try to publish.", response.status_code)
             return True
         except Exception as exc:
@@ -1375,128 +1400,18 @@ class WordPressClient:
         return urljoin(self.config.wp_url.rstrip("/") + "/", "xmlrpc.php")
 
     def xmlrpc_call(self, method: str, params: tuple[Any, ...]) -> Any:
-        payload = xmlrpc.client.dumps(params, methodname=method, allow_none=False)
-        headers = {
-            "Content-Type": "text/xml; charset=utf-8",
-            "User-Agent": default_headers()["User-Agent"],
-            "Accept": "*/*",
-        }
-        url = self.xmlrpc_url()
-        response = None
-        for attempt in range(2):
-            response = self.session.post(
-                url,
-                data=payload.encode("utf-8"),
-                headers=headers,
-                timeout=self.request_timeout(),
-                verify=self.config.verify_ssl,
-            )
-            body = response.text or ""
-            if response.status_code == 409 and "humans_" in body and attempt == 0:
-                match = re.search(r'document\.cookie\s*=\s*"([^"=]+)=([^"]+)"', body)
-                if match:
-                    self.session.cookies.set(match.group(1), match.group(2).rstrip(";"))
-                    LOGGER.info("Retrying WordPress XML-RPC after anti-bot cookie.")
-                    continue
-            break
-        if response is None:
-            raise RuntimeError("XML-RPC request returned no response")
-        if response.status_code >= 400:
-            raise RuntimeError(f"XML-RPC HTTP {response.status_code}: {(response.text or '')[:200]}")
-        result, _ctype = xmlrpc.client.loads(response.content, use_builtin_types=True)
-        return result[0] if result else None
+        raise RuntimeError("XML-RPC is disabled for WP_LOGIN_LINK authentication.")
 
     def probe_xmlrpc(self) -> bool:
-        try:
-            blogs = self.xmlrpc_call(
-                "wp.getUsersBlogs",
-                (self.config.wp_user, self.config.wp_pass),
-            )
-            name = ""
-            if isinstance(blogs, list) and blogs:
-                first = blogs[0] if isinstance(blogs[0], dict) else {}
-                name = str(first.get("blogName") or first.get("url") or "")
-            self.use_xmlrpc = True
-            LOGGER.info("WordPress XML-RPC auth OK%s.", f" ({name})" if name else "")
-            return True
-        except xmlrpc.client.Fault as exc:
-            self.mark_auth_failed(f"WordPress XML-RPC login failed: {exc.faultString}")
-            return False
-        except Exception as exc:
-            if is_connect_error(exc):
-                self.mark_unreachable(f"WordPress XML-RPC connect failed: {exc}")
-                return False
-            self.mark_auth_failed(f"WordPress XML-RPC login failed: {exc}")
-            return False
-
-    def page_id_from_url(self, page_url: str) -> int:
-        slug = urlparse(page_url or "").path.strip("/").rstrip("/").split("/")[-1]
-        if not slug:
-            return 0
-        try:
-            response = self.session.get(
-                self.endpoint(self.config.wp_post_type),
-                params={"slug": slug},
-                timeout=self.request_timeout(),
-                verify=self.config.verify_ssl,
-            )
-            if response.status_code != 200:
-                return 0
-            payload = response.json()
-            if isinstance(payload, list) and payload:
-                return int(payload[0].get("id") or 0)
-        except Exception as exc:
-            LOGGER.warning("Could not resolve WordPress id for %s: %s", page_url, exc)
-        return 0
+        # XML-RPC uses username/password authentication and is intentionally disabled
+        # for WP_LOGIN_LINK bearer-token authentication.
+        return False
 
     def edit_xmlrpc(self, post_id: int, title: str, content_html: str, page_url: str) -> str:
-        self.xmlrpc_call(
-            "wp.editPost",
-            (
-                0,
-                self.config.wp_user,
-                self.config.wp_pass,
-                int(post_id),
-                {
-                    "post_title": title[:180],
-                    "post_content": content_html,
-                    "post_status": "publish",
-                },
-            ),
-        )
-        LOGGER.info("WordPress XML-RPC updated page %s -> %s", post_id, page_url)
-        return page_url
+        raise RuntimeError("XML-RPC is disabled for WP_LOGIN_LINK authentication.")
 
     def publish_xmlrpc(self, title: str, content_html: str, slug: str) -> str:
-        post_id = self.xmlrpc_call(
-            "wp.newPost",
-            (
-                0,
-                self.config.wp_user,
-                self.config.wp_pass,
-                {
-                    "post_type": "page" if self.config.wp_post_type == "pages" else "post",
-                    "post_status": "publish",
-                    "post_title": title[:180],
-                    "post_content": content_html,
-                    "post_name": slug,
-                },
-            ),
-        )
-        link = ""
-        try:
-            post = self.xmlrpc_call(
-                "wp.getPost",
-                (0, self.config.wp_user, self.config.wp_pass, int(post_id), ["link"]),
-            )
-            if isinstance(post, dict):
-                link = str(post.get("link") or "")
-        except Exception as exc:
-            LOGGER.warning("XML-RPC getPost failed after create: %s", exc)
-        if not link:
-            link = urljoin(self.config.wp_url.rstrip("/") + "/", f"{slug}/")
-        LOGGER.info("WordPress XML-RPC published %s -> %s", self.config.wp_post_type[:-1], link)
-        return link
+        raise RuntimeError("XML-RPC is disabled for WP_LOGIN_LINK authentication.")
 
     def api_headers(self, headers: dict[str, str] | None = None) -> dict[str, str]:
         final_headers = {
@@ -1506,6 +1421,8 @@ class WordPressClient:
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
         }
+        if self.config.wp_token:
+            final_headers["Authorization"] = f"Bearer {self.config.wp_token}"
         origin = origin_from_url(self.config.wp_url)
         if origin:
             final_headers["Origin"] = origin
@@ -1526,7 +1443,6 @@ class WordPressClient:
                 response = self.session.request(
                     method,
                     url,
-                    auth=(self.config.wp_user, self.config.wp_pass),
                     headers=headers,
                     timeout=request_timeout,
                     verify=self.config.verify_ssl,
