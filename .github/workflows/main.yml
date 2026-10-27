@@ -70,7 +70,7 @@ jobs:
           WP_URL: https://positronacademy.in/wp
           WP_USER: ${{ secrets.WP_USER }}
           WP_PASS: ${{ secrets.WP_PASS }}
-          WP_REFERER: https://positronacademy.in/wp-admin/
+          WP_REFERER: https://positronacademy.in/wp/wp-admin/
           ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           SKIP_WORDPRESS: "false"
           MAX_RUN_SECONDS: "1500"
