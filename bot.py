@@ -1093,7 +1093,7 @@ class StateStore:
             SELECT guid, title, source_url, wp_link
             FROM items
             WHERE status = 'published'
-              AND wp_link LIKE '%positronacademy.in/%'
+              AND wp_link LIKE '%https://positronacademy.in/wp/%'
               AND (
                 title LIKE '%Educational Update%'
                 OR title LIKE '%🔥%'
@@ -1282,9 +1282,9 @@ class WordPressClient:
         self.disable(
             reason,
             "WordPress host is dropping this runner (TCP connect timeout). "
-            "positronacademy.in is on webhostbox/HostGator — Imunify360 or cPanel IP Blocker "
+            "https://positronacademy.in/wp is on webhostbox/HostGator — Imunify360 or cPanel IP Blocker "
             "usually blacklists GitHub Actions. Whitelist this runner IP, then re-run. "
-            "Telegram will continue without positronacademy.in pages.",
+            "Telegram will continue without https://positronacademy.in/wp pages.",
         )
 
     def mark_auth_failed(self, reason: str) -> None:
@@ -2479,7 +2479,7 @@ class MirrorBot:
                         self.telegram.send_text(
                             self.config.admin_chat_id,
                             (
-                                "⚠️ positronacademy.in WordPress pages nahi ban paye.\n"
+                                "⚠️ https://positronacademy.in/wp WordPress pages nahi ban paye.\n"
                                 f"{self.wordpress.disabled_reason}"
                             )[:3900],
                             disable_preview=True,
