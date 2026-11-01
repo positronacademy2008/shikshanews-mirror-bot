@@ -88,7 +88,7 @@ jobs:
           MAX_SOURCE_PAGES_PER_ITEM: "3"
           FETCH_SOURCE_FOR_LINKS: "true"
           PAGE_BUILD_MODE: mirror
-          SOURCE_PAGE_HOSTS: rajasthanvacancy.in
+          SOURCE_PAGE_HOSTS: freshrojgar.com,vidyasambal.in,rajasthanvacancy.in
           SKIP_MESSAGE_PHRASES: ""
           WEB_FOLLOW_LINE: ""
           OWN_TELEGRAM_URL: https://t.me/KapilRJ06
@@ -120,5 +120,6 @@ jobs:
               git push origin HEAD:main || true
             fi
           fi
+
 
 
