@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       clean_previous_run:
-        description: "Fresh test Ã¢â‚¬â€ wipe state and re-send entire feed in one run (newest first)"
+        description: "Fresh test — wipe state and re-send entire feed in one run (newest first)"
         required: false
         default: false
         type: boolean
@@ -45,7 +45,7 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           DEST_CHANNEL: "@testsourcechannelA"
-          FEED_URL: https://t.me/s/Shiksha_Vibhag
+          FEED_URL: https://t.me/s/ShikshaVibhag
           DIAGNOSE_SKIP_FEED: "true"
           WP_URL: https://positronacademy.in/wp
           WP_USER: ${{ secrets.WP_USER }}
@@ -68,8 +68,8 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           DEST_CHANNEL: "@testsourcechannelA"
-          FEED_URL: https://t.me/s/Shiksha_Vibhag
-          FEED_FALLBACK_URLS: https://tg.i-c-a.su/rss/Shiksha_Vibhag
+          FEED_URL: https://t.me/s/ShikshaVibhag
+          FEED_FALLBACK_URLS: https://tg.i-c-a.su/rss/ShikshaVibhag
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: openai/gpt-oss-120b
           GROQ_FALLBACK_MODELS: openai/gpt-oss-20b
@@ -94,15 +94,15 @@ jobs:
           MAX_SOURCE_PAGES_PER_ITEM: "3"
           FETCH_SOURCE_FOR_LINKS: "true"
           PAGE_BUILD_MODE: mirror
-          SOURCE_PAGE_HOSTS: freshrojgar.com,vidyasambal.in,rajasthanvacancy.in
+          SOURCE_PAGE_HOSTS: freshrojgar.com,vidyasambal.in,firstshiksha.com,indresults.com,rajasthanvacancy.in
           SKIP_MESSAGE_PHRASES: ""
           WEB_FOLLOW_LINE: ""
           OWN_TELEGRAM_URL: https://t.me/KapilRJ06
           OWN_WHATSAPP_URL: https://whatsapp.com/channel/0029VaZYv1G1noz4mprmxQ0q
           BRAND_IMAGES: "false"
           IMAGE_BRAND_NAME: POSITRON ACADEMY
-          IMAGE_BRAND_ADDRESS: "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â§Ã Â¤Â°Ã Â¥â‚¬ Ã Â¤Â¹Ã Â¥â€°Ã Â¤Â¸Ã Â¥ÂÃ Â¤ÂªÃ Â¤Â¿Ã Â¤Å¸Ã Â¤Â² Ã Â¤â€¢Ã Â¥â€¡ Ã Â¤ÂªÃ Â¤Â¾Ã Â¤Â¸, Ã Â¤ÂªÃ Â¤Â¾Ã Â¤â€šÃ Â¤Â¸Ã Â¤Â² Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¹Ã Â¤Â¾,Ã Â¤Â­Ã Â¥â‚¬Ã Â¤Â²Ã Â¤ÂµÃ Â¤Â¾Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¾"
-          IMAGE_BRAND_ADDRESS_LATIN: "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â§Ã Â¤Â°Ã Â¥â‚¬ Ã Â¤Â¹Ã Â¥â€°Ã Â¤Â¸Ã Â¥ÂÃ Â¤ÂªÃ Â¤Â¿Ã Â¤Å¸Ã Â¤Â² Ã Â¤â€¢Ã Â¥â€¡ Ã Â¤ÂªÃ Â¤Â¾Ã Â¤Â¸, Ã Â¤ÂªÃ Â¤Â¾Ã Â¤â€šÃ Â¤Â¸Ã Â¤Â² Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¹Ã Â¤Â¾,Ã Â¤Â­Ã Â¥â‚¬Ã Â¤Â²Ã Â¤ÂµÃ Â¤Â¾Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¾"
+          IMAGE_BRAND_ADDRESS: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"
+          IMAGE_BRAND_ADDRESS_LATIN: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"
           IMAGE_BRAND_CONTACT: "8104894648"
           FOLLOW_LINE_TG: ""
           FOLLOW_LINE_WA: ""
@@ -126,7 +126,4 @@ jobs:
               git push origin HEAD:main || true
             fi
           fi
-
-
-
 
