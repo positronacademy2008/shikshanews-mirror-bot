@@ -288,6 +288,8 @@ def _element_starts_with_blocked_source_link(element) -> bool:
 
 def _remove_source_link_start_blocks(soup_or_tag) -> None:
     for element in list(soup_or_tag.find_all(["p", "li", "div", "section"])):
+        if element.find(["div", "table", "ul", "ol", "section", "article"]):
+            continue
         if _element_starts_with_blocked_source_link(element):
             element.decompose()
             continue
@@ -717,12 +719,14 @@ def _remove_duplicate_title_blocks(soup, title: str) -> None:
     for heading in list(soup.find_all(re.compile(r"^h[1-6]$"))):
         if _title_match_key(heading.get_text(" ", strip=True)) == title_key:
             heading.decompose()
-    for tag in list(soup.find_all(["p", "div", "span", "strong"])):
+    for tag in list(soup.find_all(["p", "span", "strong", "em", "b"])):
+        if tag.find(["p", "div", "table", "ul", "ol", "section", "article"]):
+            continue
         text = bot.normalize_whitespace(tag.get_text(" ", strip=True))
         if not text:
             continue
         text_key = _title_match_key(text)
-        if text_key == title_key or (len(title_key) >= 24 and text_key.startswith(title_key[:24])):
+        if text_key == title_key and len(text) <= len(title) + 20:
             tag.decompose()
 
 
