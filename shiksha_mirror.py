@@ -1,4 +1,4 @@
-"""Shiksha News Rajasthan mirror bot — indianaukrihelp.com pages to positronacademy.in."""
+﻿"""Shiksha News Rajasthan mirror bot â€” indianaukrihelp.com pages to positronacademy.in."""
 from __future__ import annotations
 
 import logging
@@ -11,7 +11,7 @@ from typing import Any
 import requests
 from urllib.parse import urlparse
 
-import run_bot  # noqa: F401 — mirror sanitization + WP page builders
+import run_bot  # noqa: F401 â€” mirror sanitization + WP page builders
 
 import bot
 
@@ -33,7 +33,7 @@ LINK_LINE_PREFIXES = (
     "source:",
     "pdf:",
     "full post:",
-    "📌 full post",
+    "ðŸ“Œ full post",
 )
 
 FEED_CHANNEL_LINE_HINTS = (
@@ -50,6 +50,7 @@ MEDIA_ONLY_WP_MARKER = "media-only"
 TELEGRAM_MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z][A-Za-z0-9_]{2,}")
 
 _original_catchup_wordpress_links = bot.MirrorBot.catchup_wordpress_links
+_original_load_feed = bot.MirrorBot.load_feed
 _original_build_caption = run_bot.build_caption
 _mirror_send_pdf_item = bot.MirrorBot.send_pdf_item
 
@@ -391,7 +392,7 @@ def _should_process_item(item: bot.FeedItem, config: bot.Config) -> bool:
 
 
 def catchup_mirror_targets_only(self: bot.MirrorBot, feed_items: list[bot.FeedItem]) -> None:
-    """Only back-fill WordPress for indianaukrihelp mirror posts — never image-only feed items."""
+    """Only back-fill WordPress for indianaukrihelp mirror posts â€” never image-only feed items."""
     if not self.wordpress.available:
         return
     if not bot.parse_bool(os.environ.get("WP_CATCHUP"), True):
@@ -550,9 +551,9 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
         self.state.mark_published(item.guid, stored_wp_link)
 
         if source_replacements:
-            mirror_lines = "\n".join(f"• {old} → {new}" for old, new in list(source_replacements.items())[:4])
+            mirror_lines = "\n".join(f"â€¢ {old} â†’ {new}" for old, new in list(source_replacements.items())[:4])
             admin_message = (
-                "✅ Mirror webpage published\n"
+                "âœ… Mirror webpage published\n"
                 f"Title: {item.title[:200]}\n"
                 f"Webpage: {wp_link}\n"
                 f"Sent to: {', '.join(self.config.dest_channels)}\n"
@@ -561,7 +562,7 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
         else:
             media_kind = "PDF" if _has_valid_pdf(item) else "Photo"
             admin_message = (
-                f"✅ {media_kind} forwarded (no indianaukrihelp link)\n"
+                f"âœ… {media_kind} forwarded (no indianaukrihelp link)\n"
                 f"Title: {item.title[:200]}\n"
                 f"Sent to: {', '.join(self.config.dest_channels)}"
             )
@@ -574,7 +575,7 @@ def process_mirror_item(self: bot.MirrorBot, item: bot.FeedItem) -> None:
         _notify_admin(
             self.telegram,
             self.config,
-            f"❌ Mirror failed\nTitle: {item.title[:200]}\nError: {error[:1500]}",
+            f"âŒ Mirror failed\nTitle: {item.title[:200]}\nError: {error[:1500]}",
         )
 
 
@@ -677,6 +678,55 @@ def dispatch_telegram_clean(
         item.enclosure_type = primary_type
 
 
+def _load_feed_via_telethon(self: bot.MirrorBot) -> tuple[list[bot.FeedItem], str]:
+    tg_session = os.environ.get("TG_SESSION", "").strip()
+    tg_api_id = os.environ.get("TG_API_ID", "").strip()
+    tg_api_hash = os.environ.get("TG_API_HASH", "").strip()
+
+    if tg_session and tg_api_id and tg_api_hash:
+        try:
+            import asyncio
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+
+            LOGGER.info("Fetching feed directly from @ShikshaVibhag using Telethon user session...")
+            channel_name = "ShikshaVibhag"
+
+            async def fetch():
+                client = TelegramClient(StringSession(tg_session), int(tg_api_id), tg_api_hash)
+                await client.connect()
+                entity = await client.get_entity(channel_name)
+                messages = await client.get_messages(entity, limit=30)
+                items = []
+                for m in messages:
+                    if not m.text and not m.media:
+                        continue
+                    first_line = (m.text or "").split("\n")[0].strip()
+                    title = first_line[:120] if first_line else "Educational Update"
+                    guid = f"https://t.me/{channel_name}/{m.id}"
+                    content = m.text or ""
+                    item = bot.FeedItem(
+                        guid=guid,
+                        title=title,
+                        text=content,
+                        html_content=f"<p>{content}</p>",
+                        source_url=guid,
+                        enclosure_url="",
+                        enclosure_type=""
+                    )
+                    items.append(item)
+                await client.disconnect()
+                return items
+
+            items = asyncio.run(fetch())
+            if items:
+                LOGGER.info("Telethon successfully parsed %s feed item(s) from @%s", len(items), channel_name)
+                return items, f"https://t.me/s/{channel_name}"
+        except Exception as exc:
+            LOGGER.warning("Telethon feed fetch error: %s; falling back to standard feed URLs", exc)
+
+    return _original_load_feed(self)
+
 def patch_mirror_bot() -> None:
     _bind_select_items_newest_first()
     run_bot.build_caption = build_caption_with_handle_replace
@@ -685,6 +735,7 @@ def patch_mirror_bot() -> None:
     bot.MirrorBot.dispatch_telegram = dispatch_telegram_clean
     bot.MirrorBot.process_one = process_mirror_item
     bot.MirrorBot.catchup_wordpress_links = catchup_mirror_targets_only
+    bot.MirrorBot.load_feed = _load_feed_via_telethon
 
 
 def main() -> None:

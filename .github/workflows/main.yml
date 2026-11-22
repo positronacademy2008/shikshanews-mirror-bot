@@ -39,8 +39,10 @@ jobs:
 
       - name: Diagnose feed and channels
         continue-on-error: true
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        env:          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
           DEST_CHANNEL: "@testsourcechannelA"
           FEED_URL: https://t.me/s/Shiksha_Vibhag
           DIAGNOSE_SKIP_FEED: "true"
@@ -59,8 +61,10 @@ jobs:
           fi
 
       - name: Run mirror bot
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        env:          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
           DEST_CHANNEL: "@testsourcechannelA"
           FEED_URL: https://t.me/s/Shiksha_Vibhag
           FEED_FALLBACK_URLS: https://tg.i-c-a.su/rss/Shiksha_Vibhag
@@ -120,6 +124,7 @@ jobs:
               git push origin HEAD:main || true
             fi
           fi
+
 
 
 
