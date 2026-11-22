@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       clean_previous_run:
-        description: "Fresh test — wipe state and re-send entire feed in one run (newest first)"
+        description: "Fresh test â€” wipe state and re-send entire feed in one run (newest first)"
         required: false
         default: false
         type: boolean
@@ -99,8 +99,8 @@ jobs:
           OWN_WHATSAPP_URL: https://whatsapp.com/channel/0029VaZYv1G1noz4mprmxQ0q
           BRAND_IMAGES: "false"
           IMAGE_BRAND_NAME: POSITRON ACADEMY
-          IMAGE_BRAND_ADDRESS: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"
-          IMAGE_BRAND_ADDRESS_LATIN: "चौधरी हॉस्पिटल के पास, पांसल चौराहा,भीलवाड़ा"
+          IMAGE_BRAND_ADDRESS: "à¤šà¥Œà¤§à¤°à¥€ à¤¹à¥‰à¤¸à¥à¤ªà¤¿à¤Ÿà¤² à¤•à¥‡ à¤ªà¤¾à¤¸, à¤ªà¤¾à¤‚à¤¸à¤² à¤šà¥Œà¤°à¤¾à¤¹à¤¾,à¤­à¥€à¤²à¤µà¤¾à¤¡à¤¼à¤¾"
+          IMAGE_BRAND_ADDRESS_LATIN: "à¤šà¥Œà¤§à¤°à¥€ à¤¹à¥‰à¤¸à¥à¤ªà¤¿à¤Ÿà¤² à¤•à¥‡ à¤ªà¤¾à¤¸, à¤ªà¤¾à¤‚à¤¸à¤² à¤šà¥Œà¤°à¤¾à¤¹à¤¾,à¤­à¥€à¤²à¤µà¤¾à¤¡à¤¼à¤¾"
           IMAGE_BRAND_CONTACT: "8104894648"
           FOLLOW_LINE_TG: ""
           FOLLOW_LINE_WA: ""
