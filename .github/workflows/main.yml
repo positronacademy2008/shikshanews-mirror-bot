@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       clean_previous_run:
-        description: "Fresh test â€” wipe state and re-send entire feed in one run (newest first)"
+        description: "Fresh test Ã¢â‚¬â€ wipe state and re-send entire feed in one run (newest first)"
         required: false
         default: false
         type: boolean
@@ -39,7 +39,8 @@ jobs:
 
       - name: Diagnose feed and channels
         continue-on-error: true
-        env:          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -61,7 +62,8 @@ jobs:
           fi
 
       - name: Run mirror bot
-        env:          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -99,8 +101,8 @@ jobs:
           OWN_WHATSAPP_URL: https://whatsapp.com/channel/0029VaZYv1G1noz4mprmxQ0q
           BRAND_IMAGES: "false"
           IMAGE_BRAND_NAME: POSITRON ACADEMY
-          IMAGE_BRAND_ADDRESS: "à¤šà¥Œà¤§à¤°à¥€ à¤¹à¥‰à¤¸à¥à¤ªà¤¿à¤Ÿà¤² à¤•à¥‡ à¤ªà¤¾à¤¸, à¤ªà¤¾à¤‚à¤¸à¤² à¤šà¥Œà¤°à¤¾à¤¹à¤¾,à¤­à¥€à¤²à¤µà¤¾à¤¡à¤¼à¤¾"
-          IMAGE_BRAND_ADDRESS_LATIN: "à¤šà¥Œà¤§à¤°à¥€ à¤¹à¥‰à¤¸à¥à¤ªà¤¿à¤Ÿà¤² à¤•à¥‡ à¤ªà¤¾à¤¸, à¤ªà¤¾à¤‚à¤¸à¤² à¤šà¥Œà¤°à¤¾à¤¹à¤¾,à¤­à¥€à¤²à¤µà¤¾à¤¡à¤¼à¤¾"
+          IMAGE_BRAND_ADDRESS: "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â§Ã Â¤Â°Ã Â¥â‚¬ Ã Â¤Â¹Ã Â¥â€°Ã Â¤Â¸Ã Â¥ÂÃ Â¤ÂªÃ Â¤Â¿Ã Â¤Å¸Ã Â¤Â² Ã Â¤â€¢Ã Â¥â€¡ Ã Â¤ÂªÃ Â¤Â¾Ã Â¤Â¸, Ã Â¤ÂªÃ Â¤Â¾Ã Â¤â€šÃ Â¤Â¸Ã Â¤Â² Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¹Ã Â¤Â¾,Ã Â¤Â­Ã Â¥â‚¬Ã Â¤Â²Ã Â¤ÂµÃ Â¤Â¾Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¾"
+          IMAGE_BRAND_ADDRESS_LATIN: "Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â§Ã Â¤Â°Ã Â¥â‚¬ Ã Â¤Â¹Ã Â¥â€°Ã Â¤Â¸Ã Â¥ÂÃ Â¤ÂªÃ Â¤Â¿Ã Â¤Å¸Ã Â¤Â² Ã Â¤â€¢Ã Â¥â€¡ Ã Â¤ÂªÃ Â¤Â¾Ã Â¤Â¸, Ã Â¤ÂªÃ Â¤Â¾Ã Â¤â€šÃ Â¤Â¸Ã Â¤Â² Ã Â¤Å¡Ã Â¥Å’Ã Â¤Â°Ã Â¤Â¾Ã Â¤Â¹Ã Â¤Â¾,Ã Â¤Â­Ã Â¥â‚¬Ã Â¤Â²Ã Â¤ÂµÃ Â¤Â¾Ã Â¤Â¡Ã Â¤Â¼Ã Â¤Â¾"
           IMAGE_BRAND_CONTACT: "8104894648"
           FOLLOW_LINE_TG: ""
           FOLLOW_LINE_WA: ""
